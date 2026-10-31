@@ -856,7 +856,10 @@ final class Approvals
     private function applyUpdate(Approval $approval): Model
     {
         $subject = $this->subjectOf($approval);
-        $requested = Snapshot::columns($subject, Snapshot::raw(Snapshot::open($approval->new_state ?? [])));
+        $requested = array_diff_key(
+            Snapshot::columns($subject, Snapshot::raw(Snapshot::open($approval->new_state ?? []))),
+            array_flip(self::bookkeepingColumns($subject)),
+        );
         $before = Snapshot::raw(Snapshot::open($approval->current_state ?? []));
         $live = $subject->getAttributes();
         $conflicts = [];
