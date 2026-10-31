@@ -172,13 +172,13 @@ describe('updating', function (): void {
         $edited->update(['meta' => ['source' => 'import', 'lines' => [1, 2]]]);
         $approval = $edited->heldApproval();
 
-        expect($approval?->new_state['meta'] ?? null)->toBe(['source' => 'import', 'lines' => [1, 2]])
-            ->and($approval?->current_state['meta'] ?? null)->toBe(['source' => 'manual', 'lines' => [1]]);
+        expect($approval?->new_state['meta'] ?? null)->toEqual(['source' => 'import', 'lines' => [1, 2]])
+            ->and($approval?->current_state['meta'] ?? null)->toEqual(['source' => 'manual', 'lines' => [1]]);
 
         Invoice::query()->whereKey($invoice->id)->update(['meta' => '{"lines":[1],"source":"manual"}']);
         approvals()->approve($approval, $this->checker->id);
 
-        expect($invoice->fresh()?->meta)->toBe(['source' => 'import', 'lines' => [1, 2]]);
+        expect($invoice->fresh()?->meta)->toEqual(['source' => 'import', 'lines' => [1, 2]]);
     });
 
     it('compares structured values by content, but keeps list order', function (): void {
