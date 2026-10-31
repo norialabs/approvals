@@ -15,6 +15,9 @@ final class Snapshot
 
     private const SEAL = 'approvals:sealed:';
 
+    /** @var array<string, list<string>> */
+    private static array $columns = [];
+
     private const STRUCTURED_CASTS = ['array', 'json', 'object', 'collection', AsArrayObject::class, AsCollection::class];
 
     /**
@@ -81,6 +84,18 @@ final class Snapshot
         }
 
         return $changes;
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     * @return array<string, mixed>
+     */
+    public static function columns(Model $model, array $attributes): array
+    {
+        $key = $model->getConnectionName().'|'.$model->getTable();
+        self::$columns[$key] ??= $model->getConnection()->getSchemaBuilder()->getColumnListing($model->getTable());
+
+        return self::$columns[$key] === [] ? $attributes : array_intersect_key($attributes, array_flip(self::$columns[$key]));
     }
 
     /**

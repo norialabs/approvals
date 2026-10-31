@@ -181,6 +181,27 @@ describe('updating', function (): void {
         expect($invoice->fresh()?->meta)->toEqual(['source' => 'import', 'lines' => [1, 2]]);
     });
 
+    it('keeps query aggregates and other non-columns out of what it stores', function (): void {
+        $invoice = invoice();
+        $loaded = Invoice::query()->withCount('tags')->findOrFail($invoice->id);
+        $loaded->update(['amount' => '2500.00']);
+        $approval = $loaded->heldApproval();
+
+        expect($approval?->current_state)->not->toHaveKey('tags_count')
+            ->and($approval?->new_state)->toBe(['amount' => '2500.00']);
+    });
+
+    it('applies a stored state that names fields the table does not have', function (): void {
+        $invoice = invoice();
+        $invoice->update(['amount' => '2500.00']);
+        $approval = $invoice->heldApproval();
+        $approval?->forceFill(['new_state' => ['amount' => '2500.00', 'legacy_flag' => true]])->save();
+
+        approvals()->approve($approval?->fresh(), $this->checker->id);
+
+        expect($invoice->fresh()?->amount)->toBe('2500.00');
+    });
+
     it('compares structured values by content, but keeps list order', function (): void {
         expect(Snapshot::same('{"b": 1, "a": [1, 2]}', ['a' => [1, 2], 'b' => 1]))->toBeTrue()
             ->and(Snapshot::same('[1, 2]', [2, 1]))->toBeFalse()

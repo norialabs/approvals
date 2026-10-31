@@ -258,7 +258,7 @@ final class Approvals
             subjectKey: self::key($model->getKey()),
             subject: $model,
             currentState: null,
-            newState: $model->getAttributes(),
+            newState: Snapshot::columns($model, $model->getAttributes()),
             payload: $extras === null ? null : ['extras' => $extras],
             actorId: $actorId,
             tenantId: $this->tenancy->of($model),
@@ -845,7 +845,7 @@ final class Approvals
         }
 
         $model = new $class;
-        $model->setRawAttributes(Snapshot::raw(Snapshot::open($approval->new_state ?? [])));
+        $model->setRawAttributes(Snapshot::columns($model, Snapshot::raw(Snapshot::open($approval->new_state ?? []))));
         $this->applying($model, $approval);
         $this->withoutApproval(fn () => $model->save());
         $approval->forceFill(['subject_id' => self::key($model->getKey())]);
@@ -856,7 +856,7 @@ final class Approvals
     private function applyUpdate(Approval $approval): Model
     {
         $subject = $this->subjectOf($approval);
-        $requested = Snapshot::raw(Snapshot::open($approval->new_state ?? []));
+        $requested = Snapshot::columns($subject, Snapshot::raw(Snapshot::open($approval->new_state ?? [])));
         $before = Snapshot::raw(Snapshot::open($approval->current_state ?? []));
         $live = $subject->getAttributes();
         $conflicts = [];
@@ -1209,10 +1209,10 @@ final class Approvals
     /** @return array{0: array<string, mixed>|null, 1: array<string, mixed>|null, 2: array<string, mixed>|null} */
     private function states(Model $model, Operation $operation): array
     {
-        $original = Settings::stringKeys($model->getRawOriginal());
+        $original = Snapshot::columns($model, Settings::stringKeys($model->getRawOriginal()));
 
         return match ($operation) {
-            Operation::Create => [null, $model->getAttributes(), null],
+            Operation::Create => [null, Snapshot::columns($model, $model->getAttributes()), null],
             Operation::Update => $this->updateStates($model, $original),
             default => [$original, null, null],
         };
@@ -1229,13 +1229,15 @@ final class Approvals
         $dirty = $model->getDirty();
         $relevant = array_diff(array_keys($dirty), $ignored);
 
+        $attributes = Snapshot::columns($model, $model->getAttributes());
+
         if ($relevant === []) {
-            return [$original, $model->getAttributes(), []];
+            return [$original, $attributes, []];
         }
 
-        $stored = array_diff_key($dirty, array_flip($bookkeeping));
+        $stored = Snapshot::columns($model, array_diff_key($dirty, array_flip($bookkeeping)));
 
-        return [$original, [...$original, ...$model->getAttributes()], $stored];
+        return [$original, [...$original, ...$attributes], $stored];
     }
 
     /** @return list<string> */
