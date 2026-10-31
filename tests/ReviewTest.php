@@ -498,6 +498,40 @@ describe('audit trail', function (): void {
         expect((float) $invoice->fresh()?->amount)->toBe(400.0);
     });
 
+    it('applies structured values stored as arrays, as hand-built and older requests hold them', function (): void {
+        $invoice = heldInvoice();
+        $invoice->heldApproval()->forceFill([
+            'current_state' => [...($invoice->heldApproval()->current_state ?? []), 'meta' => null],
+            'new_state' => ['amount' => '1500.00', 'meta' => ['source' => 'import', 'lines' => [1, 2]]],
+        ])->save();
+
+        approvals()->approve($invoice->heldApproval()->fresh(), $this->checker->id);
+
+        expect($invoice->fresh()?->meta)->toEqual(['source' => 'import', 'lines' => [1, 2]]);
+    });
+
+    it('returns the record a create request points at when it already exists', function (): void {
+        $invoice = new Invoice(['number' => 'INV-EXIST']);
+        $invoice->saveWithoutApproval();
+        $approval = Approval::query()->create([
+            'subject_type' => $invoice->getMorphClass(),
+            'subject_id' => $invoice->id,
+            'operation' => 'create',
+            'maker_id' => $this->maker->id,
+            'requirement' => Requirement::of(new Step('review'))->toArray(),
+            'new_state' => ['number' => 'INV-EXIST'],
+        ]);
+
+        expect($approval->step)->toBe(0)
+            ->and($approval->stage)->toBe(1)
+            ->and($approval->status)->toBe(Status::Pending);
+
+        approvals()->approve($approval, $this->checker->id);
+
+        expect(Invoice::query()->where('number', 'INV-EXIST')->count())->toBe(1)
+            ->and($approval->fresh()?->status)->toBe(Status::Approved);
+    });
+
     it('describes a request in one line', function (): void {
         $invoice = heldInvoice();
 

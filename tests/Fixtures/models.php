@@ -116,7 +116,7 @@ final class Invoice extends Model
 
     protected $hidden = ['secret'];
 
-    protected $casts = ['amount' => 'decimal:2'];
+    protected $casts = ['amount' => 'decimal:2', 'meta' => 'array'];
 
     /** @var list<string> */
     protected array $approvalIgnored = ['viewed_at'];
