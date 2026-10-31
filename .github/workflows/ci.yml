@@ -59,6 +59,7 @@ jobs:
         run: composer test
 
   verify:
+    name: Verify what changed
     needs: test
     if: always()
     runs-on: ubuntu-24.04
