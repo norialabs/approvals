@@ -47,6 +47,7 @@ abstract class TestCase extends Orchestra
         $this->rebuild();
         Payout::$paid = [];
         Invoice::$applied = [];
+        Invoice::$refuseApplying = null;
         Gate::define('approve-invoices', fn (User $user): bool => $user->role === 'finance');
     }
 

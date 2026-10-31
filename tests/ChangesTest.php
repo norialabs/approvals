@@ -364,6 +364,31 @@ describe('records saved before they are approved', function (): void {
         expect(Document::query()->withUnapproved()->sole()->title)->toBe('Rejected: Draft');
     });
 
+    it('carries extras with a submitted record and applies them on approval, or at once without review', function (): void {
+        $tag = Tag::query()->create(['name' => 'urgent']);
+        $held = invoice();
+        $approval = $held->withApprovalExtras(['tags' => [$tag->id]])->submitForApproval();
+
+        expect($approval?->extras())->toBe(['tags' => [$tag->id]])
+            ->and($held->tags()->count())->toBe(0);
+
+        approvals()->approve($approval, $this->checker->id);
+        expect($held->tags()->count())->toBe(1);
+
+        config(['approvals.subject_policies' => [Invoice::class => ['approve' => false]]]);
+        $direct = invoice(['number' => 'INV-950']);
+
+        expect($direct->withApprovalExtras(['tags' => [$tag->id]])->submitForApproval())->toBeNull()
+            ->and($direct->tags()->count())->toBe(1);
+
+        config(['approvals.subject_policies' => [Invoice::class => ['automatic' => 'trusted']]]);
+        $automatic = invoice(['number' => 'INV-951']);
+
+        expect($automatic->withApprovalExtras(['tags' => [$tag->id]])->submitForApproval())->toBeNull()
+            ->and($automatic->tags()->count())->toBe(1)
+            ->and($automatic->approvals()->sole()->extras())->toBe(['tags' => [$tag->id]]);
+    });
+
     it('refuses a submission without anyone signed in when the host requires one', function (): void {
         config(['approvals.without_actor' => 'reject']);
         $document = new Document(['title' => 'Draft']);
