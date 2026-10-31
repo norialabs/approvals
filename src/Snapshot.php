@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Noria\Approvals;
 
+use Illuminate\Database\Eloquent\Casts\AsArrayObject;
+use Illuminate\Database\Eloquent\Casts\AsCollection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Crypt;
 
@@ -13,12 +15,16 @@ final class Snapshot
 
     private const SEAL = 'approvals:sealed:';
 
+    private const STRUCTURED_CASTS = ['array', 'json', 'object', 'collection', AsArrayObject::class, AsCollection::class];
+
     /**
      * @param  array<string, mixed>  $attributes
      * @return array<string, mixed>
      */
     public static function seal(Model $model, array $attributes): array
     {
+        $attributes = self::structured($model, $attributes);
+
         foreach (self::encrypted($model) as $field) {
             $value = $attributes[$field] ?? null;
 
@@ -94,6 +100,13 @@ final class Snapshot
 
     public static function same(mixed $left, mixed $right): bool
     {
+        $left = self::decodedJson($left);
+        $right = self::decodedJson($right);
+
+        if (is_array($left) && is_array($right)) {
+            return self::canonical($left) === self::canonical($right);
+        }
+
         if ($left === null || $right === null) {
             return $left === $right;
         }
@@ -143,6 +156,49 @@ final class Snapshot
         $value = (new \ReflectionProperty($model, $property))->getValue($model);
 
         return is_array($value) ? array_values(array_filter($value, is_string(...))) : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     * @return array<string, mixed>
+     */
+    private static function structured(Model $model, array $attributes): array
+    {
+        $casts = $model->getCasts();
+
+        foreach ($attributes as $field => $value) {
+            $cast = is_string($casts[$field] ?? null) ? explode(':', $casts[$field])[0] : null;
+
+            if (is_string($value) && $cast !== null && in_array(strtolower($cast), array_map(strtolower(...), self::STRUCTURED_CASTS), true)) {
+                $attributes[$field] = self::decodedJson($value);
+            }
+        }
+
+        return $attributes;
+    }
+
+    private static function decodedJson(mixed $value): mixed
+    {
+        if (! is_string($value) || ! in_array(ltrim($value)[0] ?? '', ['[', '{'], true)) {
+            return $value;
+        }
+
+        $decoded = json_decode($value, true);
+
+        return is_array($decoded) ? $decoded : $value;
+    }
+
+    /**
+     * @param  array<mixed>  $value
+     * @return array<mixed>
+     */
+    private static function canonical(array $value): array
+    {
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return array_map(fn (mixed $item): mixed => is_array($item) ? self::canonical($item) : $item, $value);
     }
 
     private static function isSealed(mixed $value): bool

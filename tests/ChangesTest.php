@@ -164,6 +164,29 @@ describe('updating', function (): void {
             ->and($approval->events()->pluck('action')->all())->toBe(['submitted', 'failed']);
     });
 
+    it('keeps a structured column as a structure and applies it over the database\'s own spelling of the same value', function (): void {
+        $invoice = invoice();
+        Invoice::query()->whereKey($invoice->id)->update(['meta' => '{"source": "manual", "lines": [1]}']);
+
+        $edited = Invoice::query()->findOrFail($invoice->id);
+        $edited->update(['meta' => ['source' => 'import', 'lines' => [1, 2]]]);
+        $approval = $edited->heldApproval();
+
+        expect($approval?->new_state['meta'] ?? null)->toBe(['source' => 'import', 'lines' => [1, 2]])
+            ->and($approval?->current_state['meta'] ?? null)->toBe(['source' => 'manual', 'lines' => [1]]);
+
+        Invoice::query()->whereKey($invoice->id)->update(['meta' => '{"lines":[1],"source":"manual"}']);
+        approvals()->approve($approval, $this->checker->id);
+
+        expect($invoice->fresh()?->meta)->toBe(['source' => 'import', 'lines' => [1, 2]]);
+    });
+
+    it('compares structured values by content, but keeps list order', function (): void {
+        expect(Snapshot::same('{"b": 1, "a": [1, 2]}', ['a' => [1, 2], 'b' => 1]))->toBeTrue()
+            ->and(Snapshot::same('[1, 2]', [2, 1]))->toBeFalse()
+            ->and(Snapshot::same('{not json', '{not json'))->toBeTrue();
+    });
+
     it('overwrites a stale field when the host prefers the request to win', function (): void {
         config(['approvals.on_conflict' => 'overwrite']);
         $invoice = invoice();
