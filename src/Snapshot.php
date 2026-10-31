@@ -101,7 +101,15 @@ final class Snapshot
     /** @return list<string> */
     public static function hidden(Model $model): array
     {
-        return array_values(array_unique([...$model->getHidden(), ...self::encrypted($model), ...self::listed($model, 'approvalHidden')]));
+        $secretCasts = [];
+
+        foreach ($model->getCasts() as $field => $cast) {
+            if (str_contains(strtolower($cast), 'encrypt') || strtolower($cast) === 'hashed') {
+                $secretCasts[] = $field;
+            }
+        }
+
+        return array_values(array_unique([...$model->getHidden(), ...$secretCasts, ...self::encrypted($model), ...self::listed($model, 'approvalHidden')]));
     }
 
     /** @return list<string> */

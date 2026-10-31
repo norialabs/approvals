@@ -13,6 +13,7 @@ final readonly class Requirement
         public array $steps,
         public ?int $expiresAfter = null,
         public ?string $automatic = null,
+        public ?string $reason = null,
     ) {
         if ($expiresAfter !== null && $expiresAfter < 1) {
             throw new InvalidArgumentException('An approval must expire after at least one minute.');
@@ -33,6 +34,16 @@ final readonly class Requirement
         return new self([], automatic: $reason);
     }
 
+    public function because(?string $reason): self
+    {
+        return new self($this->steps, $this->expiresAfter, $this->automatic, $reason);
+    }
+
+    public function explanation(): ?string
+    {
+        return $this->automatic ?? $this->reason;
+    }
+
     public function isAutomatic(): bool
     {
         return $this->automatic !== null;
@@ -45,7 +56,7 @@ final readonly class Requirement
 
     public function expiringAfter(?int $minutes): self
     {
-        return new self($this->steps, $minutes, $this->automatic);
+        return new self($this->steps, $minutes, $this->automatic, $this->reason);
     }
 
     public function isNeeded(): bool
@@ -63,7 +74,7 @@ final readonly class Requirement
         $steps = $this->steps;
         $steps[$index] = $step;
 
-        return new self(array_values($steps), $this->expiresAfter, $this->automatic);
+        return new self(array_values($steps), $this->expiresAfter, $this->automatic, $this->reason);
     }
 
     /** @param array<mixed> $definition */
@@ -85,6 +96,11 @@ final readonly class Requirement
 
         $steps = $definition['steps'] ?? [];
         $expiresAfter = $definition['expires_after'] ?? null;
+        $reason = $definition['reason'] ?? null;
+
+        if ($reason !== null && ! is_string($reason)) {
+            throw new InvalidArgumentException('A requirement reason must be text.');
+        }
 
         if (! is_array($steps)) {
             throw new InvalidArgumentException('Approval steps must be a list of step definitions.');
@@ -104,10 +120,10 @@ final readonly class Requirement
             $parsed[] = Step::fromArray($step);
         }
 
-        return new self($parsed, $expiresAfter === null ? null : (int) $expiresAfter);
+        return new self($parsed, $expiresAfter === null ? null : (int) $expiresAfter, reason: $reason);
     }
 
-    /** @return array{steps: list<array<string, mixed>>, expires_after?: int, automatic?: string} */
+    /** @return array{steps: list<array<string, mixed>>, expires_after?: int, automatic?: string, reason?: string} */
     public function toArray(): array
     {
         $definition = ['steps' => array_map(fn (Step $step): array => $step->toArray(), $this->steps)];
@@ -118,6 +134,10 @@ final readonly class Requirement
 
         if ($this->expiresAfter !== null) {
             $definition['expires_after'] = $this->expiresAfter;
+        }
+
+        if ($this->reason !== null) {
+            $definition['reason'] = $this->reason;
         }
 
         return $definition;

@@ -218,6 +218,8 @@ final class Memo extends Model
 
     protected $guarded = [];
 
+    protected $casts = ['pin' => 'encrypted'];
+
     /** @var list<string> */
     protected array $approvalOperations = ['update'];
 }

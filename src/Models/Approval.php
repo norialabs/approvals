@@ -124,6 +124,13 @@ class Approval extends Model
         return is_array($extras) ? Settings::stringKeys($extras) : [];
     }
 
+    public function reason(): ?string
+    {
+        $reason = $this->requirement['automatic'] ?? $this->requirement['reason'] ?? null;
+
+        return is_string($reason) ? $reason : null;
+    }
+
     public function isAutomatic(): bool
     {
         return isset($this->requirement['automatic']);

@@ -207,6 +207,20 @@ describe('rules', function (): void {
 });
 
 describe('definitions', function (): void {
+    it('carries the reason a requirement was chosen onto the request', function (): void {
+        $requirement = Requirement::of(new Step('platform'))->because('changes platform access');
+
+        expect(Requirement::fromArray($requirement->toArray()))->toEqual($requirement)
+            ->and($requirement->explanation())->toBe('changes platform access')
+            ->and(Requirement::automatic('trusted')->explanation())->toBe('trusted')
+            ->and(fn () => Requirement::fromArray(['steps' => [], 'reason' => 5]))->toThrow(InvalidArgumentException::class, 'must be text');
+
+        config(['approvals.subject_policies' => [Invoice::class => ['steps' => [['name' => 'review']], 'reason' => 'merchant policy']]]);
+        (new Invoice(['number' => 'INV-R']))->save();
+
+        expect(latestApproval()->reason())->toBe('merchant policy');
+    });
+
     it('round-trips a requirement through an array', function (): void {
         $requirement = Requirement::of(
             new Step('finance', approvals: 2, users: [1, 'u-2'], ability: 'approve', roles: ['finance'], escalateAfter: 30, escalateTo: new Step('director')),

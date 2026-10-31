@@ -56,7 +56,8 @@ Every property is optional:
   so `touch()` never needs approval. Business dates such as `paid_at` are real data and are not
   ignored. List fields to ignore on every model in the `ignored` config key.
 - `approvalEncrypted`: fields encrypted inside the stored request, and shown as `[hidden]`.
-- `approvalHidden`: fields shown as `[hidden]` to reviewers, on top of the model's `$hidden`.
+- `approvalHidden`: fields shown as `[hidden]` to reviewers, on top of the model's `$hidden` and any
+  field with an encrypted or hashed cast.
 - `approvalOperations`: which operations need approval. Leave it out to cover all of them.
 
 A restore that needs no approval saves its `deleted_at` change without review. Setting the soft
@@ -235,7 +236,8 @@ A policy decides which steps a change needs. It is looked up in this order:
 4. `default` in config: one approval from anyone but the maker.
 
 The policy is copied onto each request when it is made, so editing a policy never changes requests
-already waiting.
+already waiting. Say why a policy chose a requirement with `->because('over threshold')`, or `reason`
+in config; `$approval->reason()` returns it, or the reason of an automatic approval.
 
 ```php
 'subject_policies' => [
