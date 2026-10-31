@@ -67,3 +67,161 @@ jobs:
         env:
           RESULT: ${{ needs.test.result }}
         run: test "$RESULT" = success
+
+  tag:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      name: ${{ steps.tag.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine version bump and create tag
+        id: tag
+        run: |
+          set -euo pipefail
+
+          EXISTING=$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)
+
+          if [ -n "$EXISTING" ]; then
+            echo "HEAD is already tagged $EXISTING; reusing it."
+            echo "name=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          assert_version_unused() {
+            TAG="$1"
+
+            REMOTE_REF=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk 'NR==1 {print $1}')
+
+            if [ -n "$REMOTE_REF" ]; then
+              REMOTE_COMMIT=$(git rev-parse "${REMOTE_REF}^{commit}" 2>/dev/null || echo "$REMOTE_REF")
+
+              if [ "$REMOTE_COMMIT" = "$(git rev-parse HEAD)" ]; then
+                echo "Tag ${TAG} already exists upstream at this commit; reusing it."
+                echo "name=${TAG}" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              echo "Refusing to move ${TAG}."
+              echo "  upstream: ${REMOTE_COMMIT}"
+              echo "  HEAD:     $(git rev-parse HEAD)"
+              echo "Moving a published tag desynchronises Packagist from the repo."
+              exit 1
+            fi
+
+            FEED=$(curl -fsS --max-time 15 \
+              "https://repo.packagist.org/p2/norialabs/approvals.json" || true)
+
+            if [ -z "$FEED" ]; then
+              echo "Could not reach Packagist to confirm ${TAG} is unused; continuing."
+              return 0
+            fi
+
+            if printf '%s' "$FEED" | grep -q "\"version\":\"${TAG}\""; then
+              echo "Refusing to create ${TAG}: Packagist already published that version."
+              echo "The tag was deleted but the version was not, so recreating it here"
+              echo "would serve different content under a version already in the wild."
+              echo "Delete the version on Packagist first, or bump past it."
+              exit 1
+            fi
+          }
+
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -Ev '^v0\.0\.' | head -n1 || true)
+
+          if [ -z "$LATEST_TAG" ]; then
+            NEW_TAG="v0.1.0"
+            echo "Latest release tag: none"
+            echo "New tag: $NEW_TAG"
+
+            assert_version_unused "$NEW_TAG"
+
+            git tag "$NEW_TAG"
+            git push origin "$NEW_TAG"
+            echo "name=$NEW_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Latest release tag: $LATEST_TAG"
+
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          if [ "$MAJOR" -ne 0 ] || [ "$MINOR" -ne 1 ]; then
+            echo "Refusing to auto-release outside v0.1.x. Move the release baseline manually when you are ready."
+            exit 1
+          fi
+
+          PATCH=$((PATCH + 1))
+          echo "Bump: patch"
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New tag: $NEW_TAG"
+
+          assert_version_unused "$NEW_TAG"
+
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "name=$NEW_TAG" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    needs: [verify, tag]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.tag.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TAG_NAME" ]; then
+            echo "The tag job produced no tag name."
+            exit 1
+          fi
+
+          for _ in $(seq 1 10); do
+            if git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release already exists for $TAG_NAME"
+          else
+            gh release create "$TAG_NAME" --generate-notes
+          fi
+
+      - name: Update Packagist
+        continue-on-error: true
+        env:
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PACKAGIST_TOKEN:-}" ]; then
+            echo "No PACKAGIST_TOKEN here; leaving the update to the GitHub integration."
+            exit 0
+          fi
+
+          curl -sS --fail-with-body -XPOST \
+            -H 'Content-Type: application/json' \
+            "https://packagist.org/api/update-package?username=thekiharani&apiToken=${PACKAGIST_TOKEN}" \
+            -d '{"repository":{"url":"https://github.com/norialabs/approvals"}}'
