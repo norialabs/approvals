@@ -51,11 +51,16 @@ class Invoice extends Model
 
 Every property is optional:
 
-- `approvalIgnored`: fields that can change without review. `created_at`, `updated_at` and
-  `remember_token` are always ignored.
+- `approvalIgnored`: fields that can change without review. The model's own created and updated
+  timestamps and its remember token are always ignored, under whatever names the model gives them,
+  so `touch()` never needs approval. Business dates such as `paid_at` are real data and are not
+  ignored. List fields to ignore on every model in the `ignored` config key.
 - `approvalEncrypted`: fields encrypted inside the stored request, and shown as `[hidden]`.
 - `approvalHidden`: fields shown as `[hidden]` to reviewers, on top of the model's `$hidden`.
 - `approvalOperations`: which operations need approval. Leave it out to cover all of them.
+
+A restore that needs no approval saves its `deleted_at` change without review. Setting the soft
+delete column by hand is still held, so it can't be used to delete without approval.
 
 A held write returns `false` and changes nothing:
 
@@ -303,6 +308,7 @@ Every action also lands in `approval_events`, which refuses updates and deletes:
 | `enforced` | `true` (`APPROVALS_ENFORCED`) | Off skips review everywhere. |
 | `intercept` | `halt` | `halt` returns `false` from the held write; `throw` throws `ApprovalRequired`. |
 | `without_actor` | `hold` | With nobody signed in: `hold` for review, `allow` the write through, or `reject` it. |
+| `ignored` | `[]` | Fields that change without review on every model, beyond its own timestamps. |
 | `distinct_reviewers` | `true` | One person approves once per request, across steps. |
 | `on_conflict` | `fail` | `overwrite` lets an approved update win over later edits. |
 | `run_migrations` | `true` | Off when you publish and own the migration. |

@@ -71,6 +71,14 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        Schema::create('memos', function (Blueprint $table): void {
+            $table->id();
+            $table->string('body');
+            $table->timestamp('written_on')->nullable();
+            $table->timestamp('revised_on')->nullable();
+            $table->timestamp('removed_on')->nullable();
+        });
+
         Schema::create('tags', function (Blueprint $table): void {
             $table->id();
             $table->string('name');

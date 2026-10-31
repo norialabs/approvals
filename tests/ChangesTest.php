@@ -14,6 +14,7 @@ use Noria\Approvals\Tests\Fixtures\Contract;
 use Noria\Approvals\Tests\Fixtures\Document;
 use Noria\Approvals\Tests\Fixtures\Drawing;
 use Noria\Approvals\Tests\Fixtures\Invoice;
+use Noria\Approvals\Tests\Fixtures\Memo;
 use Noria\Approvals\Tests\Fixtures\Payout;
 use Noria\Approvals\Tests\Fixtures\Tag;
 
@@ -107,6 +108,38 @@ describe('updating', function (): void {
         expect($invoice->update(['viewed_at' => now()]))->toBeTrue()
             ->and($invoice->fresh()?->viewed_at)->not->toBeNull()
             ->and($invoice->approvals()->count())->toBe(0);
+    });
+
+    it('lets the model’s own timestamps change without review, whatever they are named', function (): void {
+        $invoice = invoice();
+        $memo = Memo::query()->create(['body' => 'Site visit at 9']);
+        $this->travel(1)->day();
+
+        expect($invoice->touch())->toBeTrue()
+            ->and($memo->touch())->toBeTrue()
+            ->and($memo->update(['written_on' => now()->subYear()]))->toBeTrue()
+            ->and($memo->update(['body' => 'Site visit at 10']))->toBeFalse()
+            ->and(array_keys($memo->heldApproval()->new_state ?? []))->toBe(['body']);
+    });
+
+    it('lets the host ignore more fields on every model', function (): void {
+        config(['approvals.ignored' => ['notes']]);
+        $invoice = invoice();
+
+        expect($invoice->update(['notes' => 'Called the supplier']))->toBeTrue()
+            ->and($invoice->update(['notes' => 'Again', 'amount' => '9.00']))->toBeFalse()
+            ->and($invoice->heldApproval()->new_state)->toMatchArray(['notes' => 'Again', 'amount' => '9.00']);
+    });
+
+    it('restores without review when restoring needs none, yet still holds a hand-set deletion', function (): void {
+        $memo = Memo::query()->create(['body' => 'Draft']);
+
+        expect($memo->delete())->toBeTrue()
+            ->and($memo->restore())->toBeTrue()
+            ->and(Memo::query()->count())->toBe(1)
+            ->and($memo->isRestoringWithApproval())->toBeFalse()
+            ->and($memo->update(['removed_on' => now()]))->toBeFalse()
+            ->and(Memo::query()->count())->toBe(1);
     });
 
     it('refuses a second request while one is open', function (): void {

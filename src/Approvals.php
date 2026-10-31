@@ -34,8 +34,6 @@ final class Approvals
 {
     public const RELATION_METHODS = ['attach', 'detach', 'sync', 'syncWithoutDetaching', 'syncWithPivotValues', 'toggle', 'updateExistingPivot'];
 
-    private const ALWAYS_IGNORED = ['created_at', 'updated_at', 'remember_token'];
-
     private int $bypassDepth = 0;
 
     public function __construct(
@@ -966,7 +964,8 @@ final class Approvals
      */
     private function updateStates(Model $model, array $original): array
     {
-        $ignored = [...self::ALWAYS_IGNORED, ...Snapshot::listed($model, 'approvalIgnored')];
+        $bookkeeping = self::bookkeepingColumns($model);
+        $ignored = [...$bookkeeping, ...Settings::ignoredFields(), ...Snapshot::listed($model, 'approvalIgnored')];
         $dirty = $model->getDirty();
         $relevant = array_diff(array_keys($dirty), $ignored);
 
@@ -974,9 +973,25 @@ final class Approvals
             return [$original, $model->getAttributes(), []];
         }
 
-        $stored = array_diff_key($dirty, array_flip(self::ALWAYS_IGNORED));
+        $stored = array_diff_key($dirty, array_flip($bookkeeping));
 
         return [$original, [...$original, ...$model->getAttributes()], $stored];
+    }
+
+    /** @return list<string> */
+    private static function bookkeepingColumns(Model $model): array
+    {
+        $columns = [$model->getCreatedAtColumn(), $model->getUpdatedAtColumn(), 'remember_token'];
+
+        if (method_exists($model, 'getRememberTokenName')) {
+            $columns[] = $model->getRememberTokenName();
+        }
+
+        if (method_exists($model, 'isRestoringWithApproval') && $model->isRestoringWithApproval() === true && method_exists($model, 'getDeletedAtColumn')) {
+            $columns[] = $model->getDeletedAtColumn();
+        }
+
+        return array_values(array_unique(array_filter($columns, fn (mixed $column): bool => is_string($column) && $column !== '')));
     }
 
     private function modelBypassed(Model $model): bool

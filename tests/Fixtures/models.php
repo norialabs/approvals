@@ -182,6 +182,27 @@ final class Contract extends Model
     }
 }
 
+/**
+ * @property int $id
+ * @property string $body
+ */
+final class Memo extends Model
+{
+    use RequiresApproval;
+    use SoftDeletes;
+
+    public const CREATED_AT = 'written_on';
+
+    public const UPDATED_AT = 'revised_on';
+
+    public const DELETED_AT = 'removed_on';
+
+    protected $guarded = [];
+
+    /** @var list<string> */
+    protected array $approvalOperations = ['update'];
+}
+
 /** @property int $id */
 final class Tag extends Model
 {
