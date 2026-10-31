@@ -68,26 +68,36 @@ final class Approvals
 
     public function intercept(Model $model, Operation $operation): bool
     {
-        if ($this->bypassed() || $this->modelBypassed($model)) {
+        $extras = self::extrasOf($model);
+        $confirmations = self::confirmationsOf($model);
+        $passThrough = function () use ($model, $extras): bool {
+            if ($extras !== null) {
+                $this->afterWrite($model, fn (Model $written) => $this->applyExtras($written, $extras, null));
+            }
+
             return true;
+        };
+
+        if ($this->bypassed() || $this->modelBypassed($model)) {
+            return $passThrough();
         }
 
         $operations = Snapshot::listed($model, 'approvalOperations');
 
         if ($operations !== [] && ! in_array($operation->value, $operations, true)) {
-            return true;
+            return $passThrough();
         }
 
         [$current, $new, $stored] = $this->states($model, $operation);
 
-        if ($operation === Operation::Update && $stored === []) {
-            return true;
+        if ($operation === Operation::Update && $stored === [] && $extras === null) {
+            return $passThrough();
         }
 
         $actorId = $this->actors->id();
 
         if ($actorId === null && Settings::withoutActor() === 'allow') {
-            return true;
+            return $passThrough();
         }
 
         if ($actorId === null && Settings::withoutActor() === 'reject') {
@@ -102,15 +112,33 @@ final class Approvals
             subject: $model,
             currentState: $current,
             newState: $new,
-            payload: null,
+            payload: $extras === null ? null : ['extras' => $extras],
             actorId: $actorId,
             tenantId: $this->tenancy->of($model),
+            confirmations: $confirmations,
         );
 
-        $approval = $this->submit($change, self::pullNotes($model), storedNewState: $stored);
+        $notes = self::pullNotes($model);
+        $requirement = $this->policy->requirementFor($change);
+
+        if ($requirement->isAutomatic()) {
+            $this->afterWrite($model, function (Model $written) use ($change, $requirement, $notes, $stored, $extras): void {
+                $approval = $this->recordAutomatic($change, $requirement, $notes, $stored, [], self::key($written->getKey()));
+                $this->applyExtras($written, $extras, $approval);
+                $this->applied($written, $approval);
+            });
+
+            return true;
+        }
+
+        if (! $requirement->isNeeded()) {
+            return $passThrough();
+        }
+
+        $approval = $this->submit($change, $notes, $requirement, $stored);
 
         if ($approval === null) {
-            return true;
+            return $passThrough();
         }
 
         if (method_exists($model, 'rememberApproval')) {
@@ -180,6 +208,36 @@ final class Approvals
         return $approval;
     }
 
+    /** @param array<string, mixed> $changes */
+    public function requestUpdate(Model $model, array $changes = [], ?string $notes = null): ?Approval
+    {
+        if (! $model->exists) {
+            throw new InvalidArgumentException('Save the record before requesting a change to it.');
+        }
+
+        if ($notes !== null && method_exists($model, 'withApprovalNotes')) {
+            $model->withApprovalNotes($notes);
+        }
+
+        $model->fill($changes);
+
+        if ($model->isDirty()) {
+            $model->save();
+        } elseif (! $this->intercept($model, Operation::Update)) {
+            $model->syncOriginal();
+        } elseif (method_exists($model, 'pullAfterApprovalWrite')) {
+            $work = $model->pullAfterApprovalWrite();
+
+            if ($work instanceof Closure) {
+                $work($model);
+            }
+        }
+
+        $held = method_exists($model, 'heldApproval') ? $model->heldApproval() : null;
+
+        return $held instanceof Approval ? $held : null;
+    }
+
     public function submitCreation(Model $model, ?string $notes = null): ?Approval
     {
         if (! $model->exists) {
@@ -192,20 +250,28 @@ final class Approvals
             throw ApprovalException::noActor();
         }
 
-        $attributes = $model->getAttributes();
-
-        return $this->submit(new PendingChange(
+        $change = new PendingChange(
             operation: Operation::Create,
             subjectClass: $model::class,
             subjectType: $model->getMorphClass(),
             subjectKey: self::key($model->getKey()),
             subject: $model,
             currentState: null,
-            newState: $attributes,
+            newState: $model->getAttributes(),
             payload: null,
             actorId: $actorId,
             tenantId: $this->tenancy->of($model),
-        ), $notes, meta: ['persisted' => true]);
+            confirmations: self::confirmationsOf($model),
+        );
+        $requirement = $this->policy->requirementFor($change);
+
+        if ($requirement->isAutomatic()) {
+            $this->applied($model, $this->recordAutomatic($change, $requirement, $notes, null, ['persisted' => true], $change->subjectKey));
+
+            return null;
+        }
+
+        return $this->submit($change, $notes, $requirement, meta: ['persisted' => true]);
     }
 
     /** @param array<mixed> $arguments */
@@ -234,7 +300,7 @@ final class Approvals
             return null;
         }
 
-        $approval = $this->submit(new PendingChange(
+        $change = new PendingChange(
             operation: Operation::Relation,
             subjectClass: $model::class,
             subjectType: $model->getMorphClass(),
@@ -245,7 +311,17 @@ final class Approvals
             payload: ['relation' => $relation, 'method' => $method, 'arguments' => $arguments],
             actorId: $this->actors->id(),
             tenantId: $this->tenancy->of($model),
-        ), $notes);
+        );
+        $requirement = $this->policy->requirementFor($change);
+
+        if ($requirement->isAutomatic()) {
+            $apply();
+            $this->applied($model, $this->recordAutomatic($change, $requirement, $notes, null, [], $change->subjectKey));
+
+            return null;
+        }
+
+        $approval = $requirement->isNeeded() ? $this->submit($change, $notes, $requirement) : null;
 
         if ($approval === null) {
             $apply();
@@ -254,7 +330,8 @@ final class Approvals
         return $approval;
     }
 
-    public function action(ApprovableAction $action, ?string $notes = null, ?Requirement $requirement = null): ?Approval
+    /** @param list<string> $confirmations */
+    public function action(ApprovableAction $action, ?string $notes = null, ?Requirement $requirement = null, ?Model $subject = null, array $confirmations = []): ?Approval
     {
         if ($this->bypassed()) {
             $this->withoutApproval(fn () => $action->handle(null));
@@ -262,24 +339,57 @@ final class Approvals
             return null;
         }
 
-        $approval = $this->submit(new PendingChange(
+        if ($subject !== null && ! $subject->exists) {
+            throw new InvalidArgumentException('Save the record an action is about before submitting the action.');
+        }
+
+        $change = new PendingChange(
             operation: Operation::Action,
-            subjectClass: $action::class,
-            subjectType: $action::class,
-            subjectKey: null,
-            subject: null,
+            subjectClass: $subject === null ? $action::class : $subject::class,
+            subjectType: $subject === null ? $action::class : $subject->getMorphClass(),
+            subjectKey: $subject === null ? null : self::key($subject->getKey()),
+            subject: $subject,
             currentState: null,
             newState: null,
             payload: ['class' => $action::class, 'data' => $action->payload()],
             actorId: $this->actors->id(),
-            tenantId: $this->tenancy->current(),
-        ), $notes, $requirement);
+            tenantId: $subject === null ? $this->tenancy->current() : $this->tenancy->of($subject),
+            confirmations: $confirmations,
+        );
+        $requirement ??= $this->policy->requirementFor($change);
+
+        if ($requirement->isAutomatic()) {
+            $approval = $this->recordAutomatic($change, $requirement, $notes, null, [], $change->subjectKey);
+            $this->withoutApproval(fn () => $action->handle($approval));
+
+            return null;
+        }
+
+        $approval = $requirement->isNeeded() ? $this->submit($change, $notes, $requirement) : null;
 
         if ($approval === null) {
             $this->withoutApproval(fn () => $action->handle(null));
         }
 
         return $approval;
+    }
+
+    public function escalate(Approval $approval, string $reason, int|string|null $actorId = null, ?Step $to = null): Approval
+    {
+        $actorId ??= $this->actors->id() ?? throw ApprovalException::noActor();
+
+        if (trim($reason) === '') {
+            throw new InvalidArgumentException('Say why the request is being escalated.');
+        }
+
+        return $this->tenancy->within($approval->tenantKey(), fn (): Approval => $this->transaction(function (Connection $connection) use ($approval, $reason, $actorId, $to): Approval {
+            $locked = $this->lock($approval);
+            $step = $this->openStep($locked);
+            $next = $to ?? $step->escalateTo ?? throw ApprovalException::notEscalatable($locked, $step->name);
+            $this->moveToStep($locked, $step, $next, $actorId, $reason, $connection);
+
+            return $locked;
+        }));
     }
 
     public function approve(Approval $approval, int|string|null $actorId = null, ?string $notes = null): Approval
@@ -313,7 +423,9 @@ final class Approvals
                 }
 
                 try {
-                    $this->apply($locked);
+                    $subject = $this->apply($locked);
+                    $this->applyExtras($subject, $locked->extras(), $locked);
+                    $this->applied($subject, $locked);
                 } catch (Throwable $exception) {
                     throw new ApplyFailed($exception);
                 }
@@ -401,6 +513,13 @@ final class Approvals
         } catch (ApprovalException) {
             return false;
         }
+    }
+
+    public function canVeto(Approval $approval, int|string|null $actorId = null): bool
+    {
+        $actorId ??= $this->actors->id();
+
+        return $actorId !== null && $approval->isOpen() && $this->mayVeto($approval, $actorId);
     }
 
     /** @return list<int|string>|null */
@@ -512,7 +631,7 @@ final class Approvals
         return $count;
     }
 
-    public function escalate(): int
+    public function escalateDue(): int
     {
         $count = 0;
 
@@ -543,15 +662,7 @@ final class Approvals
                     return false;
                 }
 
-                $next = $step->escalateTo;
-                $locked->forceFill([
-                    'requirement' => $locked->requirement()->replacing($locked->step, $next)->toArray(),
-                    'stage' => $locked->stage + 1,
-                    'escalates_at' => $next->escalateAfter === null ? null : now()->addMinutes($next->escalateAfter),
-                    'reminded_at' => null,
-                ])->save();
-                $this->record($locked, 'escalated', null, payload: ['from' => $step->name, 'to' => $next->name]);
-                $connection->afterCommit(fn () => $this->events->dispatch(new ApprovalAdvanced($locked, ApprovalAdvanced::ESCALATED, $step->name)));
+                $this->moveToStep($locked, $step, $step->escalateTo, null, null, $connection);
 
                 return true;
             }));
@@ -590,9 +701,22 @@ final class Approvals
         return $this->tenancy->within($approval->tenantKey(), fn (): Approval => $this->transaction(function (Connection $connection) use ($approval, $status, $action, $actorId, $notes): Approval {
             $locked = $this->lock($approval);
             $step = $this->openStep($locked);
-            ['principal' => $principal] = $this->authorise($locked, $step, $actorId, deciding: true);
+            $vetoed = false;
+
+            try {
+                ['principal' => $principal] = $this->authorise($locked, $step, $actorId, deciding: true);
+            } catch (ApprovalException $refused) {
+                $vetoed = $status === Status::Declined && $this->mayVeto($locked, $actorId);
+
+                if (! $vetoed) {
+                    throw $refused;
+                }
+
+                $principal = null;
+            }
+
             $this->close($locked, $status, $actorId);
-            $this->record($locked, $action, $actorId, $principal, $notes);
+            $this->record($locked, $action, $actorId, $principal, $notes, $vetoed ? ['veto' => true] : null);
 
             if ($status === Status::Declined) {
                 $this->discardCreation($locked);
@@ -680,25 +804,23 @@ final class Approvals
         return $approval->currentStep() ?? throw ApprovalException::closed($approval);
     }
 
-    private function apply(Approval $approval): void
+    private function apply(Approval $approval): ?Model
     {
-        match ($approval->operation) {
+        return match ($approval->operation) {
             Operation::Create => $this->applyCreate($approval),
             Operation::Update => $this->applyUpdate($approval),
-            Operation::Delete => $this->withoutApproval(fn () => $this->subjectOf($approval)->delete()),
+            Operation::Delete => $this->deleteSubject($approval),
             Operation::Restore => $this->restoreSubject($approval),
-            Operation::ForceDelete => $this->withoutApproval(fn () => $this->softDeletable($approval)->forceDelete()),
+            Operation::ForceDelete => $this->forceDeleteSubject($approval),
             Operation::Relation => $this->applyRelation($approval),
             Operation::Action => $this->applyAction($approval),
         };
     }
 
-    private function applyCreate(Approval $approval): void
+    private function applyCreate(Approval $approval): Model
     {
         if (($approval->meta['persisted'] ?? false) === true) {
-            $this->subjectOf($approval);
-
-            return;
+            return $this->subjectOf($approval);
         }
 
         $class = $approval->subjectClass();
@@ -711,9 +833,11 @@ final class Approvals
         $model->setRawAttributes(Snapshot::open($approval->new_state ?? []));
         $this->withoutApproval(fn () => $model->save());
         $approval->forceFill(['subject_id' => self::key($model->getKey())]);
+
+        return $model;
     }
 
-    private function applyUpdate(Approval $approval): void
+    private function applyUpdate(Approval $approval): Model
     {
         $subject = $this->subjectOf($approval);
         $requested = Snapshot::open($approval->new_state ?? []);
@@ -733,9 +857,11 @@ final class Approvals
 
         $subject->setRawAttributes([...$live, ...$requested]);
         $this->withoutApproval(fn () => $subject->save());
+
+        return $subject;
     }
 
-    private function applyRelation(Approval $approval): void
+    private function applyRelation(Approval $approval): Model
     {
         $subject = $this->subjectOf($approval);
         $payload = $approval->payload ?? [];
@@ -754,9 +880,11 @@ final class Approvals
         }
 
         $this->withoutApproval(fn () => self::writeRelation($builder, $method, array_values($arguments)));
+
+        return $subject;
     }
 
-    private function applyAction(Approval $approval): void
+    private function applyAction(Approval $approval): null
     {
         $payload = $approval->payload ?? [];
         $class = $payload['class'] ?? null;
@@ -768,6 +896,24 @@ final class Approvals
 
         $action = $class::fromPayload(Settings::stringKeys($data));
         $this->withoutApproval(fn () => $action->handle($approval));
+
+        return null;
+    }
+
+    private function deleteSubject(Approval $approval): Model
+    {
+        $subject = $this->subjectOf($approval);
+        $this->withoutApproval(fn () => $subject->delete());
+
+        return $subject;
+    }
+
+    private function forceDeleteSubject(Approval $approval): Model
+    {
+        $subject = $this->softDeletable($approval);
+        $this->withoutApproval(fn () => $subject->forceDelete());
+
+        return $subject;
     }
 
     private function subjectOf(Approval $approval): Model
@@ -784,7 +930,7 @@ final class Approvals
         return $this->subjectOf($approval);
     }
 
-    private function restoreSubject(Approval $approval): void
+    private function restoreSubject(Approval $approval): Model
     {
         $subject = $this->softDeletable($approval);
 
@@ -793,6 +939,92 @@ final class Approvals
         }
 
         $this->withoutApproval(fn () => $subject->restore());
+
+        return $subject;
+    }
+
+    /** @param array<string, mixed>|null $extras */
+    private function applyExtras(?Model $subject, ?array $extras, ?Approval $approval): void
+    {
+        if ($subject === null || $extras === null || $extras === [] || ! method_exists($subject, 'applyApprovalExtras')) {
+            return;
+        }
+
+        $this->withoutApproval(fn () => $subject->applyApprovalExtras($extras, $approval));
+    }
+
+    private function applied(?Model $subject, Approval $approval): void
+    {
+        if ($subject !== null && method_exists($subject, 'approvalApplied')) {
+            $this->withoutApproval(fn () => $subject->approvalApplied($approval));
+        }
+    }
+
+    private function afterWrite(Model $model, Closure $work): void
+    {
+        if (method_exists($model, 'afterApprovalWrite')) {
+            $model->afterApprovalWrite($work);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $storedNewState
+     * @param  array<string, mixed>  $meta
+     */
+    private function recordAutomatic(PendingChange $change, Requirement $requirement, ?string $notes, ?array $storedNewState, array $meta, int|string|null $subjectKey): Approval
+    {
+        return $this->tenancy->within($change->tenantId, fn (): Approval => $this->transaction(function (Connection $connection) use ($change, $requirement, $notes, $storedNewState, $meta, $subjectKey): Approval {
+            $sealer = $change->subject ?? new class extends Model {};
+            $model = Settings::approvalModel();
+            $approval = new $model;
+            $approval->forceFill([
+                'subject_type' => $change->subjectType,
+                'subject_id' => $subjectKey,
+                'operation' => $change->operation,
+                'status' => Status::Approved,
+                'maker_id' => $change->actorId,
+                'requirement' => $requirement->toArray(),
+                'step' => 0,
+                'stage' => 1,
+                'current_state' => $change->currentState === null ? null : Snapshot::seal($sealer, $change->currentState),
+                'new_state' => ($storedNewState ?? $change->newState) === null ? null : Snapshot::seal($sealer, $storedNewState ?? $change->newState ?? []),
+                'payload' => $change->payload,
+                'maker_notes' => $notes,
+                'closed_at' => now(),
+                'meta' => $meta === [] ? null : $meta,
+            ]);
+
+            if (Settings::tenancyEnabled()) {
+                $approval->setAttribute(Settings::tenantColumn(), $change->tenantId);
+            }
+
+            $approval->save();
+            $this->record($approval, 'auto_approved', $change->actorId, notes: $requirement->automatic, payload: ['operation' => $change->operation->value, 'maker_notes' => $notes]);
+            $connection->afterCommit(fn () => $this->events->dispatch(new ApprovalClosed($approval)));
+
+            return $approval;
+        }));
+    }
+
+    private function moveToStep(Approval $approval, Step $from, Step $to, int|string|null $actorId, ?string $reason, Connection $connection): void
+    {
+        $approval->forceFill([
+            'requirement' => $approval->requirement()->replacing($approval->step, $to)->toArray(),
+            'stage' => $approval->stage + 1,
+            'escalates_at' => $to->escalateAfter === null ? null : now()->addMinutes($to->escalateAfter),
+            'reminded_at' => null,
+        ])->save();
+        $this->record($approval, 'escalated', $actorId, notes: $reason, payload: ['from' => $from->name, 'to' => $to->name]);
+        $connection->afterCommit(fn () => $this->events->dispatch(new ApprovalAdvanced($approval, ApprovalAdvanced::ESCALATED, $from->name)));
+    }
+
+    private function mayVeto(Approval $approval, int|string $actorId): bool
+    {
+        if ($approval->maker_id !== null && Snapshot::same($approval->maker_id, $actorId)) {
+            return false;
+        }
+
+        return $this->reviewers->mayVeto($approval, $actorId);
     }
 
     private function discardCreation(Approval $approval): void
@@ -997,6 +1229,22 @@ final class Approvals
     private function modelBypassed(Model $model): bool
     {
         return method_exists($model, 'isBypassingApproval') && $model->isBypassingApproval() === true;
+    }
+
+    /** @return array<string, mixed>|null */
+    private static function extrasOf(Model $model): ?array
+    {
+        $extras = method_exists($model, 'pullApprovalExtras') ? $model->pullApprovalExtras() : null;
+
+        return is_array($extras) ? Settings::stringKeys($extras) : null;
+    }
+
+    /** @return list<string> */
+    private static function confirmationsOf(Model $model): array
+    {
+        $confirmations = method_exists($model, 'pullApprovalConfirmations') ? $model->pullApprovalConfirmations() : [];
+
+        return is_array($confirmations) ? array_values(array_filter($confirmations, is_string(...))) : [];
     }
 
     private static function pullNotes(Model $model): ?string

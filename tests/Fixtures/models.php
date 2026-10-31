@@ -124,10 +124,29 @@ final class Invoice extends Model
     /** @var list<string> */
     protected array $approvalEncrypted = ['secret'];
 
+    /** @var list<int|string|null> */
+    public static array $applied = [];
+
     /** @return BelongsToMany<Tag, $this> */
     public function tags(): BelongsToMany
     {
         return $this->belongsToMany(Tag::class)->withPivot('note');
+    }
+
+    /** @param array<string, mixed> $extras */
+    public function applyApprovalExtras(array $extras, ?Approval $approval): void
+    {
+        $tags = $extras['tags'] ?? [];
+
+        if (is_array($tags)) {
+            $this->tags()->sync($tags);
+        }
+    }
+
+    public function approvalApplied(Approval $approval): void
+    {
+        $key = $approval->getKey();
+        self::$applied[] = is_int($key) || is_string($key) ? $key : null;
     }
 }
 

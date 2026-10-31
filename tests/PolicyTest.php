@@ -14,6 +14,7 @@ use Noria\Approvals\Requirement;
 use Noria\Approvals\Step;
 use Noria\Approvals\Tests\Fixtures\Contract;
 use Noria\Approvals\Tests\Fixtures\Invoice;
+use Noria\Approvals\Tests\Fixtures\Payout;
 
 beforeEach(function (): void {
     $this->maker = person('Amina');
@@ -109,6 +110,19 @@ describe('where a policy comes from', function (): void {
         config(['approvals.reviewers' => stdClass::class]);
 
         expect(fn () => app(Reviewers::class))->toThrow(InvalidArgumentException::class, 'must implement');
+    });
+});
+
+describe('confirmations', function (): void {
+    it('passes what the maker confirmed to the policy', function (): void {
+        config(['approvals.policy' => ConfirmedSoleApproval::class]);
+        app()->forgetScopedInstances();
+
+        expect((new Invoice(['number' => 'INV-1']))->save())->toBeFalse()
+            ->and((new Invoice(['number' => 'INV-2']))->withApprovalConfirmations('sole_approval')->save())->toBeTrue()
+            ->and(Invoice::query()->sole()->approvals()->sole()->isAutomatic())->toBeTrue()
+            ->and(approvals()->action(new Payout('0700', 5)))->not->toBeNull()
+            ->and(approvals()->action(new Payout('0700', 5), confirmations: ['sole_approval']))->toBeNull();
     });
 });
 
@@ -234,6 +248,8 @@ describe('definitions', function (): void {
         'escalation delay' => [['steps' => [['escalate_after' => 'later']]], 'number of minutes'],
         'escalation too soon' => [['steps' => [['escalate_after' => 0]]], 'at least one minute'],
         'escalation target' => [['steps' => [['escalate_to' => 'boss']]], 'step definition'],
+        'automatic without a reason' => [['automatic' => 5], 'needs a reason'],
+        'automatic with an empty reason' => [['automatic' => ''], 'needs a reason and no steps'],
         'groups and step approvers together' => [['steps' => [['roles' => ['x'], 'groups' => [['name' => 'a']]]]], 'not both'],
         'two groups with one name' => [['steps' => [['groups' => [['name' => 'a'], ['name' => 'a']]]]], 'same name'],
         'unnamed group' => [['steps' => [['groups' => [['approvals' => 2]]]]], 'named group'],
@@ -249,6 +265,14 @@ describe('definitions', function (): void {
     });
 });
 
+final class ConfirmedSoleApproval implements Policy
+{
+    public function requirementFor(PendingChange $change): Requirement
+    {
+        return $change->confirmed('sole_approval') ? Requirement::automatic('sole approver confirmed') : Requirement::of(new Step('review'));
+    }
+}
+
 final class NoApprovalPolicy implements Policy
 {
     public function requirementFor(PendingChange $change): Requirement
@@ -262,6 +286,11 @@ final class OnlyEvenIds implements Reviewers
     public function allows(Approval $approval, Group $group, int|string $actorId): bool
     {
         return (int) $actorId % 2 === 0;
+    }
+
+    public function mayVeto(Approval $approval, int|string $actorId): bool
+    {
+        return false;
     }
 
     public function candidates(Approval $approval, Group $group): array

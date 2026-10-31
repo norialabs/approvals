@@ -10,6 +10,7 @@ use Noria\Approvals\Contracts\Actors;
 use Noria\Approvals\Contracts\Reviewers;
 use Noria\Approvals\Group;
 use Noria\Approvals\Models\Approval;
+use Noria\Approvals\Settings;
 
 final readonly class GateReviewers implements Reviewers
 {
@@ -48,6 +49,19 @@ final readonly class GateReviewers implements Reviewers
         }
 
         return false;
+    }
+
+    public function mayVeto(Approval $approval, int|string $actorId): bool
+    {
+        $ability = Settings::vetoAbility();
+
+        if ($ability === null) {
+            return false;
+        }
+
+        $actor = $this->actors->find($actorId);
+
+        return $actor instanceof Authenticatable && $this->gate->forUser($actor)->allows($ability, [$approval]);
     }
 
     public function candidates(Approval $approval, Group $group): ?array

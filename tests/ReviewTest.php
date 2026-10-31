@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Gate;
 use Noria\Approvals\Events\ApprovalAdvanced;
 use Noria\Approvals\Events\ApprovalClosed;
 use Noria\Approvals\Events\ApprovalFailed;
@@ -16,6 +17,7 @@ use Noria\Approvals\Status;
 use Noria\Approvals\Step;
 use Noria\Approvals\Tests\Fixtures\Contract;
 use Noria\Approvals\Tests\Fixtures\Invoice;
+use Noria\Approvals\Tests\Fixtures\User;
 
 beforeEach(function (): void {
     $this->maker = person('Amina');
@@ -256,7 +258,7 @@ describe('groups within a step', function (): void {
         approvals()->approve($approval, $this->checker->id);
 
         $this->travel(6)->minutes();
-        approvals()->escalate();
+        approvals()->escalateDue();
 
         expect(approvals()->progress($approval->fresh()))->toBe([
             ['group' => 'chair', 'approvals' => 1, 'given' => 0],
@@ -358,6 +360,69 @@ describe('delegation', function (): void {
     it('rejects delegating to oneself or ending before starting', function (): void {
         expect(fn () => approvals()->delegate($this->checker->id, $this->checker->id))->toThrow(InvalidArgumentException::class)
             ->and(fn () => approvals()->delegate($this->checker->id, $this->other->id, now(), now()->subDay()))->toThrow(InvalidArgumentException::class);
+    });
+});
+
+describe('escalating by hand', function (): void {
+    it('moves the step to its escalation with the reason and who asked', function (): void {
+        Event::fake([ApprovalAdvanced::class]);
+        chain(new Step('business', escalateTo: new Step('platform', users: [$this->other->id])));
+        $approval = heldInvoice()->heldApproval();
+
+        $escalated = approvals()->escalate($approval, 'Nobody here can judge this', $this->maker->id);
+
+        expect($escalated->currentStep()?->name)->toBe('platform')
+            ->and($escalated->stage)->toBe(2)
+            ->and($escalated->events()->where('action', 'escalated')->sole()->only(['notes', 'payload']))->toEqual(['notes' => 'Nobody here can judge this', 'payload' => ['from' => 'business', 'to' => 'platform']])
+            ->and(approvals()->approve($escalated, $this->other->id)->status)->toBe(Status::Approved);
+        Event::assertDispatched(ApprovalAdvanced::class, fn (ApprovalAdvanced $event): bool => $event->reason === ApprovalAdvanced::ESCALATED);
+    });
+
+    it('escalates to a step the caller names', function (): void {
+        $approval = heldInvoice()->heldApproval();
+
+        expect(approvals()->escalate($approval, 'Over my head', $this->maker->id, new Step('board'))->currentStep()?->name)->toBe('board');
+    });
+
+    it('refuses an escalation with nowhere to go or no reason', function (): void {
+        $approval = heldInvoice()->heldApproval();
+
+        expect(fn () => approvals()->escalate($approval, 'Help', $this->maker->id))->toThrow(ApprovalException::class, 'nowhere to escalate')
+            ->and(fn () => approvals()->escalate($approval, '  ', $this->maker->id, new Step('board')))->toThrow(InvalidArgumentException::class);
+    });
+});
+
+describe('veto', function (): void {
+    beforeEach(function (): void {
+        config(['approvals.veto_ability' => 'veto-approvals']);
+        Gate::define('veto-approvals', fn (User $user): bool => $user->role === 'compliance');
+        $this->compliance = person('Vera', 'compliance');
+    });
+
+    it('lets compliance decline a request it cannot approve', function (): void {
+        chain(new Step('finance', roles: ['finance']));
+        $approval = heldInvoice()->heldApproval();
+
+        expect(approvals()->canReview($approval, $this->compliance->id))->toBeFalse()
+            ->and(approvals()->canVeto($approval, $this->compliance->id))->toBeTrue()
+            ->and(fn () => approvals()->approve($approval, $this->compliance->id))->toThrow(ApprovalException::class)
+            ->and(fn () => approvals()->requestChanges($approval, $this->compliance->id))->toThrow(ApprovalException::class);
+
+        $declined = approvals()->decline($approval, $this->compliance->id, 'Sanctioned supplier');
+
+        expect($declined->status)->toBe(Status::Declined)
+            ->and($declined->events()->where('action', 'declined')->sole()->payload)->toBe(['veto' => true]);
+    });
+
+    it('never lets the maker veto their own request, and gives nobody a veto by default', function (): void {
+        $this->maker->forceFill(['role' => 'compliance'])->save();
+        $approval = heldInvoice()->heldApproval();
+
+        expect(approvals()->canVeto($approval, $this->maker->id))->toBeFalse();
+
+        config(['approvals.veto_ability' => null]);
+
+        expect(approvals()->canVeto($approval, $this->compliance->id))->toBeFalse();
     });
 });
 

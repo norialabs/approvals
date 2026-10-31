@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Noria\Approvals\Events\ApprovalClosed;
 use Noria\Approvals\Events\ApprovalRequested;
 use Noria\Approvals\Exceptions\ApprovalException;
 use Noria\Approvals\Exceptions\ApprovalRequired;
+use Noria\Approvals\Models\Approval;
 use Noria\Approvals\Operation;
 use Noria\Approvals\Snapshot;
 use Noria\Approvals\Status;
@@ -434,7 +436,143 @@ describe('relationship writes', function (): void {
     });
 });
 
+describe('automatic approvals', function (): void {
+    beforeEach(fn () => config(['approvals.subject_policies' => [Invoice::class => ['automatic' => 'trusted supplier']]]));
+
+    it('lets a create through and records it as approved, linked to the new row', function (): void {
+        Event::fake([ApprovalClosed::class]);
+
+        $invoice = Invoice::query()->create(['number' => 'INV-700', 'amount' => '50.00']);
+        $approval = $invoice->approvals()->sole();
+
+        expect($invoice->exists)->toBeTrue()
+            ->and($approval->status)->toBe(Status::Approved)
+            ->and($approval->isAutomatic())->toBeTrue()
+            ->and($approval->closed_at)->not->toBeNull()
+            ->and((string) $approval->maker_id)->toBe((string) $this->maker->id)
+            ->and($approval->events()->sole()->only(['action', 'notes']))->toBe(['action' => 'auto_approved', 'notes' => 'trusted supplier'])
+            ->and(Invoice::$applied)->toBe([$approval->id]);
+        Event::assertDispatched(ApprovalClosed::class);
+    });
+
+    it('records the fields an automatic update changed, and a delete', function (): void {
+        $invoice = invoice();
+
+        expect($invoice->update(['amount' => '75.00']))->toBeTrue()
+            ->and($invoice->approvals()->sole()->new_state)->toBe(['amount' => '75.00'])
+            ->and($invoice->delete())->toBeTrue()
+            ->and($invoice->approvals()->pluck('operation')->map->value->all())->toBe(['update', 'delete']);
+    });
+
+    it('records automatic relationship writes, actions and submissions', function (): void {
+        config(['approvals.subject_policies' => [
+            Invoice::class => ['automatic' => 'trusted'],
+            Payout::class => ['automatic' => 'small payout'],
+            Document::class => ['automatic' => 'trusted author'],
+        ]]);
+        $invoice = invoice();
+        $tag = Tag::query()->create(['name' => 'urgent']);
+        $document = new Document(['title' => 'Plan']);
+        $document->saveWithoutApproval();
+
+        expect($invoice->approvalRelation('tags')->attach($tag->id))->toBeNull()
+            ->and($invoice->tags()->count())->toBe(1)
+            ->and(approvals()->action(new Payout('0700000002', 9)))->toBeNull()
+            ->and(Payout::$paid[0]['approval'])->not->toBeNull()
+            ->and($document->submitForApproval())->toBeNull()
+            ->and(Document::query()->count())->toBe(1)
+            ->and(Approval::query()->where('status', 'approved')->count())->toBe(3);
+    });
+});
+
+describe('extras', function (): void {
+    it('holds extras with the change and applies them only on approval', function (): void {
+        $tag = Tag::query()->create(['name' => 'urgent']);
+        $invoice = new Invoice(['number' => 'INV-800']);
+
+        expect($invoice->withApprovalExtras(['tags' => [$tag->id]])->save())->toBeFalse()
+            ->and($invoice->heldApproval()->extras())->toBe(['tags' => [$tag->id]]);
+
+        approvals()->approve($invoice->heldApproval(), $this->checker->id);
+
+        expect(Invoice::query()->sole()->tags()->pluck('name')->all())->toBe(['urgent'])
+            ->and(Invoice::$applied)->toBe([$invoice->heldApproval()->id]);
+    });
+
+    it('holds a save that changes nothing but its extras', function (): void {
+        $invoice = invoice();
+        $tag = Tag::query()->create(['name' => 'urgent']);
+
+        $approval = $invoice->withApprovalExtras(['tags' => [$tag->id]])->requestApproval(notes: 'Tag it');
+
+        expect($approval?->extras())->toBe(['tags' => [$tag->id]])
+            ->and($approval?->maker_notes)->toBe('Tag it')
+            ->and($invoice->tags()->count())->toBe(0);
+
+        approvals()->approve($approval, $this->checker->id);
+
+        expect($invoice->tags()->count())->toBe(1);
+    });
+
+    it('requests field changes through the same call, and applies extras at once when no review is needed', function (): void {
+        $invoice = invoice();
+        $tag = Tag::query()->create(['name' => 'urgent']);
+
+        expect($invoice->requestApproval(['amount' => '99.00'])?->new_state)->toBe(['amount' => '99.00']);
+
+        config(['approvals.subject_policies' => [Invoice::class => ['approve' => false]]]);
+        $other = invoice(['number' => 'INV-900']);
+
+        expect($other->withApprovalExtras(['tags' => [$tag->id]])->requestApproval())->toBeNull()
+            ->and($other->tags()->count())->toBe(1)
+            ->and(fn () => (new Invoice)->requestApproval())->toThrow(InvalidArgumentException::class);
+    });
+
+    it('applies extras straight after the write when no review is needed', function (string $how): void {
+        $tag = Tag::query()->create(['name' => 'urgent']);
+        $invoice = new Invoice(['number' => 'INV-801']);
+        $invoice->withApprovalExtras(['tags' => [$tag->id]]);
+
+        match ($how) {
+            'bypassed' => $invoice->saveWithoutApproval(),
+            default => (function () use ($invoice): void {
+                config(['approvals.subject_policies' => [Invoice::class => ['approve' => false]]]);
+                $invoice->save();
+            })(),
+        };
+
+        expect($invoice->tags()->count())->toBe(1)
+            ->and($invoice->pullApprovalExtras())->toBeNull();
+    })->with(['bypassed', 'no review needed']);
+
+    it('lets a policy read the extras', function (): void {
+        config(['approvals.subject_policies' => [Invoice::class => [
+            'steps' => [['name' => 'review']],
+            'rules' => [['when' => [['payload.extras.tags', 'null']], 'approve' => false]],
+        ]]]);
+
+        expect((new Invoice(['number' => 'INV-802']))->save())->toBeTrue()
+            ->and((new Invoice(['number' => 'INV-803']))->withApprovalExtras(['tags' => [1]])->save())->toBeFalse();
+    });
+});
+
 describe('actions', function (): void {
+    it('binds an action to the record it is about, one open request at a time', function (): void {
+        $invoice = invoice();
+
+        $approval = approvals()->action(new Payout('0712345678', 100), 'Pay this invoice', subject: $invoice);
+
+        expect($approval?->subject_type)->toBe($invoice->getMorphClass())
+            ->and((string) $approval?->subject_id)->toBe((string) $invoice->id)
+            ->and($approval?->resolveSubject()?->is($invoice))->toBeTrue()
+            ->and(fn () => approvals()->action(new Payout('0712345678', 100), subject: $invoice))->toThrow(ApprovalException::class, 'already has a change waiting')
+            ->and(fn () => approvals()->action(new Payout('0712345678', 100), subject: new Invoice))->toThrow(InvalidArgumentException::class);
+
+        approvals()->approve($approval, $this->checker->id);
+
+        expect(Payout::$paid)->toHaveCount(1);
+    });
+
     it('holds an action and runs it once approved', function (): void {
         $approval = approvals()->action(new Payout('0712345678', 2500), 'Weekly wages');
 

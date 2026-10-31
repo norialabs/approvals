@@ -28,6 +28,8 @@ final class ApprovalException extends RuntimeException
 
     public const FAILED = 'failed';
 
+    public const NOT_ESCALATABLE = 'not_escalatable';
+
     public function __construct(
         public readonly string $reason,
         string $message,
@@ -71,6 +73,11 @@ final class ApprovalException extends RuntimeException
     public static function missingSubject(Approval $approval): self
     {
         return new self(self::MISSING_SUBJECT, 'The record this approval changes no longer exists.', $approval);
+    }
+
+    public static function notEscalatable(Approval $approval, string $step): self
+    {
+        return new self(self::NOT_ESCALATABLE, "The {$step} step has nowhere to escalate to.", $approval);
     }
 
     public static function noActor(): self

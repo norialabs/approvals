@@ -116,6 +116,19 @@ class Approval extends Model
         $query->where('maker_id', $actorId);
     }
 
+    /** @return array<string, mixed> */
+    public function extras(): array
+    {
+        $extras = $this->payload['extras'] ?? [];
+
+        return is_array($extras) ? Settings::stringKeys($extras) : [];
+    }
+
+    public function isAutomatic(): bool
+    {
+        return isset($this->requirement['automatic']);
+    }
+
     public function isOpen(): bool
     {
         return $this->status->isOpen();

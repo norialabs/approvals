@@ -13,6 +13,7 @@ final readonly class PendingChange
      * @param  array<string, mixed>|null  $currentState
      * @param  array<string, mixed>|null  $newState
      * @param  array<string, mixed>|null  $payload
+     * @param  list<string>  $confirmations
      */
     public function __construct(
         public Operation $operation,
@@ -25,7 +26,21 @@ final readonly class PendingChange
         public ?array $payload,
         public int|string|null $actorId,
         public int|string|null $tenantId,
+        public array $confirmations = [],
     ) {}
+
+    public function confirmed(string $confirmation): bool
+    {
+        return in_array($confirmation, $this->confirmations, true);
+    }
+
+    /** @return array<string, mixed> */
+    public function extras(): array
+    {
+        $extras = $this->payload['extras'] ?? [];
+
+        return is_array($extras) ? Settings::stringKeys($extras) : [];
+    }
 
     public function value(string $field): mixed
     {
