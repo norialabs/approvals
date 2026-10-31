@@ -202,6 +202,18 @@ describe('updating', function (): void {
         expect($invoice->fresh()?->amount)->toBe('2500.00');
     });
 
+    it('never lets a stored state set the record\'s own timestamps', function (): void {
+        $invoice = invoice();
+        $invoice->update(['amount' => '2500.00']);
+        $approval = $invoice->heldApproval();
+        $approval?->forceFill(['new_state' => ['amount' => '2500.00', 'created_at' => '2001-01-01 00:00:00', 'updated_at' => '2001-01-01 00:00:00']])->save();
+
+        approvals()->approve($approval?->fresh(), $this->checker->id);
+
+        expect($invoice->fresh()?->amount)->toBe('2500.00')
+            ->and($invoice->fresh()?->created_at?->year)->not->toBe(2001);
+    });
+
     it('compares structured values by content, but keeps list order', function (): void {
         expect(Snapshot::same('{"b": 1, "a": [1, 2]}', ['a' => [1, 2], 'b' => 1]))->toBeTrue()
             ->and(Snapshot::same('[1, 2]', [2, 1]))->toBeFalse()
