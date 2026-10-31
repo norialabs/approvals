@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -15,6 +16,11 @@ use Noria\Approvals\Status;
 use Noria\Approvals\Tests\Fixtures\Contract;
 use Noria\Approvals\Tests\Fixtures\Document;
 use Noria\Approvals\Tests\Fixtures\Invoice;
+
+final class UlidApproval extends Approval
+{
+    use HasUlids;
+}
 
 final class CustomApproval extends Approval
 {
@@ -119,6 +125,16 @@ it('uses the host’s own approval model', function (): void {
 
     expect($invoice->heldApproval())->toBeInstanceOf(CustomApproval::class)
         ->and(CustomApproval::query()->sole()->headline())->toBe('Custom: Create Invoice');
+});
+
+it('accepts a subclass that brings Laravel’s own unique-id trait', function (): void {
+    config(['approvals.models.approval' => UlidApproval::class]);
+    $this->actingAs(person('Amina'));
+    $invoice = new Invoice(['number' => 'INV-6']);
+    $invoice->save();
+
+    expect($invoice->heldApproval())->toBeInstanceOf(UlidApproval::class)
+        ->and(Str::isUlid((string) $invoice->heldApproval()->getKey()))->toBeTrue();
 });
 
 it('rejects settings it cannot honour', function (array $config, string $message): void {

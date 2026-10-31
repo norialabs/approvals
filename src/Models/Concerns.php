@@ -40,28 +40,32 @@ trait Concerns
         });
     }
 
-    public function getIncrementing(): bool
+    /** @return bool */
+    public function getIncrementing()
     {
         return Settings::keyType() === 'int';
     }
 
-    public function getKeyType(): string
+    /** @return string */
+    public function getKeyType()
     {
         return Settings::keyType() === 'int' ? 'int' : 'string';
     }
 
-    public function usesUniqueIds(): bool
+    /** @return bool */
+    public function usesUniqueIds()
     {
         return Settings::keyType() !== 'int';
     }
 
     /** @return list<string> */
-    public function uniqueIds(): array
+    public function uniqueIds()
     {
         return [$this->getKeyName()];
     }
 
-    public function newUniqueId(): string
+    /** @return string */
+    public function newUniqueId()
     {
         return Settings::keyType() === 'uuid' ? (string) Str::orderedUuid() : strtolower((string) Str::ulid());
     }
