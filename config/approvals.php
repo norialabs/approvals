@@ -69,6 +69,8 @@ return [
 
     'reviewers' => GateReviewers::class,
 
+    'veto_ability' => null,
+
     'database_policies' => false,
 
     'default' => [

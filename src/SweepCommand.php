@@ -31,7 +31,7 @@ final class SweepCommand extends Command
         foreach ($tasks as $task) {
             $count = match ($task) {
                 'expire' => $approvals->expire(),
-                'escalate' => $approvals->escalate(),
+                'escalate' => $approvals->escalateDue(),
                 default => $approvals->remind(is_numeric($after) ? (int) $after : null),
             };
 

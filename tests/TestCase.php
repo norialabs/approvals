@@ -7,6 +7,7 @@ namespace Noria\Approvals\Tests;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Support\Facades\Gate;
 use Noria\Approvals\ApprovalsServiceProvider;
+use Noria\Approvals\Tests\Fixtures\Invoice;
 use Noria\Approvals\Tests\Fixtures\Payout;
 use Noria\Approvals\Tests\Fixtures\User;
 use Orchestra\Testbench\TestCase as Orchestra;
@@ -45,6 +46,7 @@ abstract class TestCase extends Orchestra
         parent::setUp();
         $this->rebuild();
         Payout::$paid = [];
+        Invoice::$applied = [];
         Gate::define('approve-invoices', fn (User $user): bool => $user->role === 'finance');
     }
 

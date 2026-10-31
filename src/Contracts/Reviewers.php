@@ -13,4 +13,6 @@ interface Reviewers
 
     /** @return list<int|string>|null */
     public function candidates(Approval $approval, Group $group): ?array;
+
+    public function mayVeto(Approval $approval, int|string $actorId): bool;
 }

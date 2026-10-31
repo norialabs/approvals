@@ -21,9 +21,30 @@ trait RequiresApproval
 
     private bool $restoringWithApproval = false;
 
+    /** @var array<string, mixed>|null */
+    private ?array $approvalExtras = null;
+
+    /** @var list<string> */
+    private array $approvalConfirmations = [];
+
+    private ?\Closure $afterApprovalWrite = null;
+
     public static function bootRequiresApproval(): void
     {
         $hold = fn (Model $model, Operation $operation): ?bool => app(Approvals::class)->intercept($model, $operation) ? null : false;
+        $written = function (Model $model): void {
+            if (method_exists($model, 'pullAfterApprovalWrite')) {
+                $work = $model->pullAfterApprovalWrite();
+
+                if ($work instanceof \Closure) {
+                    $work($model);
+                }
+            }
+        };
+
+        static::created($written);
+        static::updated($written);
+        static::deleted($written);
 
         static::creating(fn (Model $model): ?bool => $hold($model, Operation::Create));
         static::updating(fn (Model $model): ?bool => $hold($model, Operation::Update));
@@ -41,10 +62,12 @@ trait RequiresApproval
 
                 return $held;
             });
-            static::registerModelEvent('restored', function (Model $model): void {
+            static::registerModelEvent('restored', function (Model $model) use ($written): void {
                 if (method_exists($model, 'markRestoringWithApproval')) {
                     $model->markRestoringWithApproval(false);
                 }
+
+                $written($model);
             });
             static::registerModelEvent('forceDeleting', fn (Model $model): ?bool => $hold($model, Operation::ForceDelete));
         }
@@ -100,6 +123,52 @@ trait RequiresApproval
         return $this;
     }
 
+    /** @param array<string, mixed> $extras */
+    public function withApprovalExtras(array $extras): static
+    {
+        $this->approvalExtras = $extras;
+
+        return $this;
+    }
+
+    /** @return array<string, mixed>|null */
+    public function pullApprovalExtras(): ?array
+    {
+        $extras = $this->approvalExtras;
+        $this->approvalExtras = null;
+
+        return $extras;
+    }
+
+    public function withApprovalConfirmations(string ...$confirmations): static
+    {
+        $this->approvalConfirmations = array_values($confirmations);
+
+        return $this;
+    }
+
+    /** @return list<string> */
+    public function pullApprovalConfirmations(): array
+    {
+        $confirmations = $this->approvalConfirmations;
+        $this->approvalConfirmations = [];
+
+        return $confirmations;
+    }
+
+    public function afterApprovalWrite(?\Closure $work): void
+    {
+        $this->afterApprovalWrite = $work;
+    }
+
+    public function pullAfterApprovalWrite(): ?\Closure
+    {
+        $work = $this->afterApprovalWrite;
+        $this->afterApprovalWrite = null;
+
+        return $work;
+    }
+
     public function pullApprovalNotes(): ?string
     {
         $notes = $this->approvalNotes;
@@ -121,6 +190,14 @@ trait RequiresApproval
     public function isBypassingApproval(): bool
     {
         return $this->bypassingApproval;
+    }
+
+    /** @param array<string, mixed> $changes */
+    public function requestApproval(array $changes = [], ?string $notes = null): ?Approval
+    {
+        $this->heldApproval = null;
+
+        return app(Approvals::class)->requestUpdate($this, $changes, $notes);
     }
 
     public function submitForApproval(?string $notes = null): ?Approval

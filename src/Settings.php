@@ -165,6 +165,13 @@ final class Settings
         return self::stringKeys($policies[$subjectClass]);
     }
 
+    public static function vetoAbility(): ?string
+    {
+        $ability = config('approvals.veto_ability');
+
+        return is_string($ability) && $ability !== '' ? $ability : null;
+    }
+
     /** @return list<string> */
     public static function ignoredFields(): array
     {

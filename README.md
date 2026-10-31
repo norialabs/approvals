@@ -154,6 +154,44 @@ final class Payout implements ApprovableAction
 $approvals->action(new Payout('0712345678', 2500), 'Weekly wages');
 ```
 
+Pass `subject: $transaction` to tie the action to the record it's about. The approval is then
+filed against that record, and the record can have only one open request at a time, just as with a
+model write.
+
+### Dependent data
+
+A request often carries data stored elsewhere, such as an order's lines or a user's roles. Attach it
+as extras, and apply it in the model:
+
+```php
+$order->withApprovalExtras(['lines' => $lines])->save();
+
+class Order extends Model
+{
+    use RequiresApproval;
+
+    public function applyApprovalExtras(array $extras, ?Approval $approval): void
+    {
+        // write the lines; runs in the same transaction as the approved change
+    }
+}
+```
+
+Extras are applied together with the change: when it's approved, or straight after the write when no
+approval is needed. Policies can read them as `payload.extras.*`. When only the extras change,
+nothing on the model is dirty and Eloquent skips the save, so request the change explicitly:
+
+```php
+$user->withApprovalExtras(['roles' => [3, 4]])->requestApproval(notes: 'Promote to finance');
+$invoice->requestApproval(['amount' => 2500]);
+```
+
+### After a change is applied
+
+Define `approvalApplied(Approval $approval)` on a model to run follow-up work, such as notifications
+or derived records, once an approved change has been applied. It also runs after an automatic
+approval.
+
 ## Reviewing
 
 ```php
@@ -261,6 +299,51 @@ to read an action's payload. `operation`, `actor` and `tenant` are also availabl
 
 Build requirements in code with `Requirement::of(new Step('finance', approvals: 2))`.
 
+## Automatic approvals
+
+A policy can approve a change automatically and still keep a record of it:
+
+```php
+return Requirement::automatic('system operator acted directly');
+// or in config: ['automatic' => 'trusted supplier']
+```
+
+The write goes ahead as if no approval were needed. Once it lands, a closed `approved` request is
+written for it, with an `auto_approved` event carrying the reason, so every change stays answerable.
+`$approval->isAutomatic()` tells these apart.
+
+### Confirmations
+
+Some decisions depend on something the maker confirmed, such as acting alone when nobody else can
+approve. Pass the confirmation with the change, and read it in your policy:
+
+```php
+$transfer->withApprovalConfirmations('sole_approval')->save();
+$approvals->action($payout, subject: $transaction, confirmations: ['sole_approval']);
+
+// in a Policy
+return $change->confirmed('sole_approval')
+    ? Requirement::automatic('sole approver confirmed')
+    : Requirement::of(new Step('finance', approvals: 2));
+```
+
+## Escalating by hand
+
+```php
+$approvals->escalate($approval, 'Needs head office', $userId);
+$approvals->escalate($approval, 'Over my limit', $userId, new Step('board', roles: ['director']));
+```
+
+This moves the current step to its `escalate_to` step, or to the step you pass, and starts its count
+again. The reason and the person who escalated are recorded on an `escalated` event. Decide in your
+own code who may escalate.
+
+## Veto
+
+Set `veto_ability` to a Gate ability. Anyone who passes it can decline any open request, even when
+they can't approve it, for example a compliance team. A veto is recorded on the `declined` event as
+`{"veto": true}`. Nobody can veto their own request. Check it with `$approvals->canVeto($approval)`.
+
 ## Delegation
 
 ```php
@@ -278,7 +361,7 @@ a reviewer cannot approve twice by also acting through a delegate. Delegations b
 change the reminder interval.
 
 - **Expire** closes requests past `expires_after` as `expired`.
-- **Escalate** moves an overdue step to its `escalate_to` step and starts its count again. It does
+- **Escalate** (`$approvals->escalateDue()`) moves an overdue step to its `escalate_to` step and starts its count again. It does
   the same at once for a step nobody left can approve, when the reviewers are known. A step with
   nowhere to go fires `ApprovalStuck`, once.
 - **Remind** fires `ApprovalReminderDue` with the reviewer ids, once per interval
@@ -298,8 +381,8 @@ Each event fires after the transaction commits:
 Send notifications from listeners.
 
 Every action also lands in `approval_events`, which refuses updates and deletes: `submitted`,
-`approved`, `advanced`, `escalated`, `stuck`, `declined`, `changes_requested`, `cancelled`,
-`expired`, `applied` and `failed`.
+`auto_approved`, `approved`, `advanced`, `escalated`, `stuck`, `declined`, `changes_requested`,
+`cancelled`, `expired`, `applied` and `failed`.
 
 ## Configuration
 
@@ -328,6 +411,7 @@ Every action also lands in `approval_events`, which refuses updates and deletes:
 | `tenancy.scope_queries` | `true` | Scopes package queries to the current tenant. |
 | `tenancy.resolver` | `ConfiguredTenancy` | Reads the tenant from the record, then the signed-in user. |
 | `policy` | `ConfiguredPolicy` | Your own `Policy` class. |
+| `veto_ability` | `null` | A Gate ability whose holders may decline any open request. |
 | `reviewers` | `GateReviewers` | Your own `Reviewers` class. |
 | `database_policies` | `false` | Reads policies from `approval_policies`. |
 | `default` | one open step | The policy for anything without its own. |
@@ -339,8 +423,9 @@ Every action also lands in `approval_events`, which refuses updates and deletes:
 Bind your own implementation of any contract, or name it in config:
 
 - `Contracts\Policy`: which steps a change needs.
-- `Contracts\Reviewers`: who may approve for a group, and who could (`candidates`, used for
-  reminders and deadlock detection). A step without groups is one group named after the step.
+- `Contracts\Reviewers`: who may approve for a group, who could (`candidates`, used for reminders
+  and deadlock detection), and who may veto (`mayVeto`). A step without groups is one group named
+  after the step.
 - `Contracts\Tenancy`: the tenant of a record, the current tenant, and `within($tenant, $callback)`.
   Every decision and sweep runs inside `within`, so you can set the database session there (for
   row-level security, for example).

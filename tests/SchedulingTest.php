@@ -67,7 +67,7 @@ describe('escalation', function (): void {
         approvals()->approve($approval, $this->checker->id);
 
         $this->travel(31)->minutes();
-        expect(approvals()->escalate())->toBe(1);
+        expect(approvals()->escalateDue())->toBe(1);
 
         $escalated = $approval->fresh();
         expect($escalated?->currentStep()?->name)->toBe('director')
@@ -85,8 +85,8 @@ describe('escalation', function (): void {
         scheduled(Requirement::of(new Step('finance', escalateAfter: 10)));
 
         $this->travel(11)->minutes();
-        approvals()->escalate();
-        approvals()->escalate();
+        approvals()->escalateDue();
+        approvals()->escalateDue();
 
         Event::assertDispatchedTimes(ApprovalStuck::class, 1);
         expect(latestApproval()->events()->pluck('action')->all())->toBe(['submitted', 'stuck']);
@@ -96,14 +96,14 @@ describe('escalation', function (): void {
         $approval = scheduled(Requirement::of(new Step('owner', users: [1], escalateTo: new Step('director', users: [3]))))->heldApproval();
 
         expect(approvals()->reviewersFor($approval))->toBe([])
-            ->and(approvals()->escalate())->toBe(1)
+            ->and(approvals()->escalateDue())->toBe(1)
             ->and($approval->fresh()?->currentStep()?->name)->toBe('director');
     });
 
     it('leaves steps alone that are neither due nor stuck', function (): void {
         scheduled(Requirement::of(new Step('finance', escalateAfter: 60)));
 
-        expect(approvals()->escalate())->toBe(0)
+        expect(approvals()->escalateDue())->toBe(0)
             ->and(latestApproval()->events()->count())->toBe(1);
     });
 
