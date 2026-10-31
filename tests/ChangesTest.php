@@ -673,6 +673,15 @@ describe('actions', function (): void {
         expect(Payout::$paid)->toBe([['account' => '0712345678', 'amount' => 2500, 'approval' => $approval?->id]]);
     });
 
+    it('takes the maker it is told rather than whoever is signed in, so a queued job keeps separation of duties', function (): void {
+        auth()->logout();
+
+        $approval = approvals()->action(new Payout('0712345678', 900), actorId: $this->maker->id);
+
+        expect($approval?->maker_id)->toBe($this->maker->id)
+            ->and(fn () => approvals()->approve($approval, $this->maker->id))->toThrow(ApprovalException::class);
+    });
+
     it('runs an action at once while review is bypassed', function (): void {
         approvals()->withoutApproval(fn () => approvals()->action(new Payout('0700000001', 5)));
 

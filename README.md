@@ -334,6 +334,15 @@ return $change->confirmed('sole_approval')
     : Requirement::of(new Step('finance', approvals: 2));
 ```
 
+### Naming the maker of an action
+
+An action takes its maker from the signed-in user. When it is raised for someone else, such as from
+a queued job, name them so they still cannot approve it themselves:
+
+```php
+$approvals->action($payout, subject: $transaction, actorId: $transaction->author_id);
+```
+
 ## Escalating by hand
 
 ```php

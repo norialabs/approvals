@@ -340,7 +340,7 @@ final class Approvals
     }
 
     /** @param list<string> $confirmations */
-    public function action(ApprovableAction $action, ?string $notes = null, ?Requirement $requirement = null, ?Model $subject = null, array $confirmations = []): ?Approval
+    public function action(ApprovableAction $action, ?string $notes = null, ?Requirement $requirement = null, ?Model $subject = null, array $confirmations = [], int|string|null $actorId = null): ?Approval
     {
         if ($this->bypassed()) {
             $this->withoutApproval(fn () => $action->handle(null));
@@ -361,7 +361,7 @@ final class Approvals
             currentState: null,
             newState: null,
             payload: ['class' => $action::class, 'data' => $action->payload()],
-            actorId: $this->actors->id(),
+            actorId: $actorId ?? $this->actors->id(),
             tenantId: $subject === null ? $this->tenancy->current() : $this->tenancy->of($subject),
             confirmations: $confirmations,
         );
