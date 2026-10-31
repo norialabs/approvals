@@ -250,6 +250,7 @@ final class Approvals
             throw ApprovalException::noActor();
         }
 
+        $extras = self::extrasOf($model);
         $change = new PendingChange(
             operation: Operation::Create,
             subjectClass: $model::class,
@@ -258,7 +259,7 @@ final class Approvals
             subject: $model,
             currentState: null,
             newState: $model->getAttributes(),
-            payload: null,
+            payload: $extras === null ? null : ['extras' => $extras],
             actorId: $actorId,
             tenantId: $this->tenancy->of($model),
             confirmations: self::confirmationsOf($model),
@@ -266,7 +267,15 @@ final class Approvals
         $requirement = $this->policy->requirementFor($change);
 
         if ($requirement->isAutomatic()) {
-            $this->applied($model, $this->recordAutomatic($change, $requirement, $notes, null, ['persisted' => true], $change->subjectKey));
+            $approval = $this->recordAutomatic($change, $requirement, $notes, null, ['persisted' => true], $change->subjectKey);
+            $this->applyExtras($model, $extras, $approval);
+            $this->applied($model, $approval);
+
+            return null;
+        }
+
+        if (! $requirement->isNeeded()) {
+            $this->applyExtras($model, $extras, null);
 
             return null;
         }
@@ -831,6 +840,7 @@ final class Approvals
 
         $model = new $class;
         $model->setRawAttributes(Snapshot::open($approval->new_state ?? []));
+        $this->applying($model, $approval);
         $this->withoutApproval(fn () => $model->save());
         $approval->forceFill(['subject_id' => self::key($model->getKey())]);
 
@@ -856,6 +866,7 @@ final class Approvals
         }
 
         $subject->setRawAttributes([...$live, ...$requested]);
+        $this->applying($subject, $approval);
         $this->withoutApproval(fn () => $subject->save());
 
         return $subject;
@@ -879,6 +890,7 @@ final class Approvals
             throw new InvalidArgumentException("[{$relation}] is no longer a many-to-many relationship.");
         }
 
+        $this->applying($subject, $approval);
         $this->withoutApproval(fn () => self::writeRelation($builder, $method, array_values($arguments)));
 
         return $subject;
@@ -903,6 +915,7 @@ final class Approvals
     private function deleteSubject(Approval $approval): Model
     {
         $subject = $this->subjectOf($approval);
+        $this->applying($subject, $approval);
         $this->withoutApproval(fn () => $subject->delete());
 
         return $subject;
@@ -911,6 +924,7 @@ final class Approvals
     private function forceDeleteSubject(Approval $approval): Model
     {
         $subject = $this->softDeletable($approval);
+        $this->applying($subject, $approval);
         $this->withoutApproval(fn () => $subject->forceDelete());
 
         return $subject;
@@ -938,6 +952,7 @@ final class Approvals
             throw new InvalidArgumentException('Restoring needs a model that uses SoftDeletes.');
         }
 
+        $this->applying($subject, $approval);
         $this->withoutApproval(fn () => $subject->restore());
 
         return $subject;
@@ -951,6 +966,13 @@ final class Approvals
         }
 
         $this->withoutApproval(fn () => $subject->applyApprovalExtras($extras, $approval));
+    }
+
+    private function applying(Model $subject, Approval $approval): void
+    {
+        if (method_exists($subject, 'approvalApplying')) {
+            $subject->approvalApplying($approval);
+        }
     }
 
     private function applied(?Model $subject, Approval $approval): void

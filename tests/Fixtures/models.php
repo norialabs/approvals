@@ -143,6 +143,15 @@ final class Invoice extends Model
         }
     }
 
+    public static ?string $refuseApplying = null;
+
+    public function approvalApplying(Approval $approval): void
+    {
+        if (self::$refuseApplying !== null) {
+            throw new \RuntimeException(self::$refuseApplying);
+        }
+    }
+
     public function approvalApplied(Approval $approval): void
     {
         $key = $approval->getKey();

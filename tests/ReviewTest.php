@@ -484,6 +484,20 @@ describe('audit trail', function (): void {
         Event::assertDispatched(ApprovalFailed::class);
     });
 
+    it('lets the record refuse an approved change just before it lands', function (): void {
+        $invoice = heldInvoice('400.00');
+        Invoice::$refuseApplying = 'This invoice is locked for audit';
+
+        expect(fn () => approvals()->approve($invoice->heldApproval(), $this->checker->id))->toThrow(ApprovalException::class, 'locked for audit');
+        expect((float) $invoice->fresh()?->amount)->toBe(100.0)
+            ->and($invoice->heldApproval()->fresh()?->status)->toBe(Status::Pending);
+
+        Invoice::$refuseApplying = null;
+        approvals()->approve($invoice->heldApproval()->fresh(), $this->checker->id);
+
+        expect((float) $invoice->fresh()?->amount)->toBe(400.0);
+    });
+
     it('describes a request in one line', function (): void {
         $invoice = heldInvoice();
 

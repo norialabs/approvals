@@ -108,7 +108,8 @@ $drawing->saveWithoutApproval();
 $drawing->submitForApproval('Ready for sign-off');
 ```
 
-Queries hide the record until it is approved. Use `Drawing::query()->withUnapproved()` to see it.
+Extras set with `withApprovalExtras()` travel with the submission. Queries hide the record until it
+is approved. Use `Drawing::query()->withUnapproved()` to see it.
 When the request is declined, cancelled or expires, the record is deleted, or permanently deleted
 if the model uses soft deletes. Define `discardUnapprovedCreation(Approval $approval)` on the model
 to handle that yourself. When changes are requested, the record stays hidden for the maker to
@@ -192,6 +193,10 @@ $invoice->requestApproval(['amount' => 2500]);
 Define `approvalApplied(Approval $approval)` on a model to run follow-up work, such as notifications
 or derived records, once an approved change has been applied. It also runs after an automatic
 approval.
+
+Define `approvalApplying(Approval $approval)` to check the record just before an approved change
+lands on it. Throw to refuse: nothing is written, the request stays open, and the refusal is
+recorded as a `failed` event.
 
 ## Reviewing
 
