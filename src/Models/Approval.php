@@ -50,6 +50,13 @@ class Approval extends Model
 
     protected $guarded = [];
 
+    /** @var array<string, mixed> */
+    protected $attributes = [
+        'status' => 'pending',
+        'step' => 0,
+        'stage' => 1,
+    ];
+
     public function getTable(): string
     {
         return Settings::table('approvals');

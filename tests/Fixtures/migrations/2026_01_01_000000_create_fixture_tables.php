@@ -51,6 +51,7 @@ return new class extends Migration
             $table->string('status')->default('draft');
             $table->text('notes')->nullable();
             $table->string('secret')->nullable();
+            $table->json('meta')->nullable();
             $table->timestamp('viewed_at')->nullable();
             $table->timestamps();
             $table->softDeletes();

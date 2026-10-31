@@ -832,6 +832,12 @@ final class Approvals
             return $this->subjectOf($approval);
         }
 
+        $existing = $approval->resolveSubject(lock: true);
+
+        if ($existing !== null) {
+            return $existing;
+        }
+
         $class = $approval->subjectClass();
 
         if ($class === null || ! is_a($class, Model::class, true)) {
@@ -839,7 +845,7 @@ final class Approvals
         }
 
         $model = new $class;
-        $model->setRawAttributes(Snapshot::open($approval->new_state ?? []));
+        $model->setRawAttributes(Snapshot::raw(Snapshot::open($approval->new_state ?? [])));
         $this->applying($model, $approval);
         $this->withoutApproval(fn () => $model->save());
         $approval->forceFill(['subject_id' => self::key($model->getKey())]);
@@ -850,8 +856,8 @@ final class Approvals
     private function applyUpdate(Approval $approval): Model
     {
         $subject = $this->subjectOf($approval);
-        $requested = Snapshot::open($approval->new_state ?? []);
-        $before = Snapshot::open($approval->current_state ?? []);
+        $requested = Snapshot::raw(Snapshot::open($approval->new_state ?? []));
+        $before = Snapshot::raw(Snapshot::open($approval->current_state ?? []));
         $live = $subject->getAttributes();
         $conflicts = [];
 

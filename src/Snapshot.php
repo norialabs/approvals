@@ -77,6 +77,21 @@ final class Snapshot
         return $changes;
     }
 
+    /**
+     * @param  array<string, mixed>  $attributes
+     * @return array<string, mixed>
+     */
+    public static function raw(array $attributes): array
+    {
+        foreach ($attributes as $field => $value) {
+            if (is_array($value)) {
+                $attributes[$field] = json_encode($value, JSON_THROW_ON_ERROR);
+            }
+        }
+
+        return $attributes;
+    }
+
     public static function same(mixed $left, mixed $right): bool
     {
         if ($left === null || $right === null) {
