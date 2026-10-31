@@ -19,6 +19,7 @@ use Noria\Approvals\Settings;
 use Noria\Approvals\Snapshot;
 use Noria\Approvals\Status;
 use Noria\Approvals\Step;
+use Noria\Approvals\Tally;
 
 /**
  * @property int|string $id
@@ -196,12 +197,35 @@ class Approval extends Model
 
     public function approvalsAtStage(): int
     {
-        return Settings::eventModel()::query()
+        return count($this->votes());
+    }
+
+    /** @return list<list<string>> */
+    public function votes(): array
+    {
+        $fallback = $this->requirement()->step($this->step)?->groups[0]->name;
+        $votes = [];
+
+        $events = Settings::eventModel()::query()
             ->withoutGlobalScopes()
             ->where('approval_id', $this->getKey())
             ->where('stage', $this->stage)
             ->where('action', 'approved')
-            ->count();
+            ->get(['payload']);
+
+        foreach ($events as $event) {
+            $groups = $event->payload['groups'] ?? null;
+            $votes[] = is_array($groups) ? array_values(array_filter($groups, is_string(...))) : ($fallback === null ? [] : [$fallback]);
+        }
+
+        return $votes;
+    }
+
+    public function tally(): Tally
+    {
+        $step = $this->requirement()->step($this->step) ?? throw new LogicException('This approval has no step at its current position.');
+
+        return new Tally($step, $this->votes());
     }
 
     public function summary(): string

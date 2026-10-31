@@ -292,10 +292,10 @@ final class Approvals
             return $this->tenancy->within($approval->tenantKey(), fn (): Approval => $this->transaction(function (Connection $connection) use ($approval, $actorId, $notes): Approval {
                 $locked = $this->lock($approval);
                 $step = $this->openStep($locked);
-                $principal = $this->authorise($locked, $step, $actorId);
-                $this->record($locked, 'approved', $actorId, $principal, $notes);
+                ['principal' => $principal, 'groups' => $groups] = $this->authorise($locked, $step, $actorId);
+                $this->record($locked, 'approved', $actorId, $principal, $notes, ['groups' => $groups]);
 
-                if ($locked->approvalsAtStage() < $step->approvals) {
+                if (! $locked->tally()->isComplete()) {
                     return $locked;
                 }
 
@@ -414,18 +414,43 @@ final class Approvals
             return [];
         }
 
-        $candidates = $this->reviewers->candidates($approval, $step);
+        $candidates = [];
 
-        if ($candidates === null) {
-            return null;
+        foreach ($approval->tally()->unfilledGroups() as $group) {
+            $listed = $this->reviewers->candidates($approval, $group);
+
+            if ($listed === null) {
+                return null;
+            }
+
+            array_push($candidates, ...$listed);
         }
 
+        $candidates = array_values(array_unique($candidates, SORT_REGULAR));
         $excluded = array_map(strval(...), [
             ...($approval->maker_id === null ? [] : [$approval->maker_id]),
             ...$approval->approverIds(Settings::distinctReviewers() ? null : $approval->stage),
         ]);
 
         return array_values(array_filter($candidates, fn (int|string $id): bool => ! in_array((string) $id, $excluded, true)));
+    }
+
+    /** @return list<array{group: string, approvals: int, given: int}> */
+    public function progress(Approval $approval): array
+    {
+        $step = $approval->currentStep();
+
+        if ($step === null) {
+            return [];
+        }
+
+        $filled = $approval->tally()->filled();
+
+        return array_map(fn (Group $group): array => [
+            'group' => $group->name,
+            'approvals' => $group->approvals,
+            'given' => $filled[$group->name] ?? 0,
+        ], $step->groups);
     }
 
     public function delegate(int|string $delegatorId, int|string $delegateId, \DateTimeInterface|string|null $startsAt = null, \DateTimeInterface|string|null $endsAt = null, ?string $subjectType = null): ApprovalDelegation
@@ -567,7 +592,7 @@ final class Approvals
         return $this->tenancy->within($approval->tenantKey(), fn (): Approval => $this->transaction(function (Connection $connection) use ($approval, $status, $action, $actorId, $notes): Approval {
             $locked = $this->lock($approval);
             $step = $this->openStep($locked);
-            $principal = $this->authorise($locked, $step, $actorId, deciding: true);
+            ['principal' => $principal] = $this->authorise($locked, $step, $actorId, deciding: true);
             $this->close($locked, $status, $actorId);
             $this->record($locked, $action, $actorId, $principal, $notes);
 
@@ -581,7 +606,8 @@ final class Approvals
         }));
     }
 
-    private function authorise(Approval $approval, Step $step, int|string $actorId, bool $deciding = false): int|string|null
+    /** @return array{principal: int|string|null, groups: list<string>} */
+    private function authorise(Approval $approval, Step $step, int|string $actorId, bool $deciding = false): array
     {
         if ($approval->maker_id !== null && Snapshot::same($approval->maker_id, $actorId)) {
             throw ApprovalException::notAllowed($approval, 'You cannot review your own request.');
@@ -593,10 +619,7 @@ final class Approvals
             throw ApprovalException::alreadyReviewed($approval);
         }
 
-        if ($this->reviewers->allows($approval, $step, $actorId)) {
-            return null;
-        }
-
+        $identities = [[null, $actorId]];
         $delegations = Settings::delegationModel()::query()
             ->forTenant($approval->tenantKey())
             ->active()
@@ -615,9 +638,32 @@ final class Approvals
                 continue;
             }
 
-            if ($this->reviewers->allows($approval, $step, $principal)) {
-                return $principal;
+            $identities[] = [$principal, $principal];
+        }
+
+        $tally = $approval->tally();
+        $full = [];
+
+        foreach ($identities as [$principal, $reviewer]) {
+            $groups = [];
+
+            foreach ($step->groups as $group) {
+                if ($this->reviewers->allows($approval, $group, $reviewer)) {
+                    $groups[] = $group->name;
+                }
             }
+
+            if ($groups !== [] && ($deciding || $tally->wouldCount($groups))) {
+                return ['principal' => $principal, 'groups' => $groups];
+            }
+
+            array_push($full, ...$groups);
+        }
+
+        if ($full !== []) {
+            $names = implode(', ', array_unique($full));
+
+            throw ApprovalException::notAllowed($approval, "The {$names} approvals for the {$step->name} step are already complete.");
         }
 
         throw ApprovalException::notAllowed($approval, "You are not a reviewer for the {$step->name} step.");
