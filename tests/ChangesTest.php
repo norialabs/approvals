@@ -306,6 +306,13 @@ describe('changes made with nobody signed in', function (): void {
 });
 
 describe('sensitive fields', function (): void {
+    it('hides fields whose casts encrypt or hash them', function (): void {
+        $memo = Memo::query()->create(['body' => 'Gate code']);
+        $memo->update(['pin' => '4471', 'body' => 'Gate code, new']);
+
+        expect(collect($memo->heldApproval()->changes())->firstWhere('field', 'pin'))->toBe(['field' => 'pin', 'from' => null, 'to' => Snapshot::HIDDEN]);
+    });
+
     it('encrypts listed fields in the stored request and restores them on approval', function (): void {
         $invoice = invoice();
         $invoice->update(['secret' => 'pin-4471']);

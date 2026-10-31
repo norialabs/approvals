@@ -74,6 +74,7 @@ return new class extends Migration
         Schema::create('memos', function (Blueprint $table): void {
             $table->id();
             $table->string('body');
+            $table->text('pin')->nullable();
             $table->timestamp('written_on')->nullable();
             $table->timestamp('revised_on')->nullable();
             $table->timestamp('removed_on')->nullable();
