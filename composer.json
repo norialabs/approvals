@@ -1,0 +1,71 @@
+{
+    "name": "norialabs/approvals",
+    "description": "Approval workflows for Eloquent models: maker-checker, four-eyes and dual control.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "approvals",
+        "maker-checker",
+        "four-eyes",
+        "dual-control",
+        "workflow"
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/console": "^11.0|^12.0|^13.0",
+        "illuminate/database": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.20",
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "pestphp/pest": "^3.0|^4.0|^5.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Noria\\Approvals\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Noria\\Approvals\\Tests\\": "tests/"
+        },
+        "classmap": [
+            "tests/Fixtures/models.php"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Noria\\Approvals\\ApprovalsServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "@hooks"
+        ],
+        "post-update-cmd": [
+            "@hooks"
+        ],
+        "hooks": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
+        "lint": "@php vendor/bin/pint --test",
+        "analyse": "@php vendor/bin/phpstan analyse --no-progress",
+        "test": "@php vendor/bin/pest",
+        "check": [
+            "@lint",
+            "@analyse",
+            "@test"
+        ]
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
