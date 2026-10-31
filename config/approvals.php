@@ -17,6 +17,8 @@ return [
 
     'without_actor' => 'hold',
 
+    'ignored' => [],
+
     'distinct_reviewers' => true,
 
     'on_conflict' => 'fail',

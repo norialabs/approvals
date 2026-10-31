@@ -1,6 +1,6 @@
 {
     "name": "norialabs/approvals",
-    "description": "Approval workflows for Eloquent models: maker-checker, four-eyes and dual control.",
+    "description": "Maker-checker approvals for Laravel. Holds Eloquent creates, updates and deletes, pivot writes and custom actions until the right people approve, with multi-step and grouped approvers, rule-based policies, delegation, expiry, escalation, an audit trail, tenancy, and configurable keys and tables.",
     "type": "library",
     "license": "MIT",
     "keywords": [

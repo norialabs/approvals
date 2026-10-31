@@ -19,6 +19,8 @@ trait RequiresApproval
 
     private ?Approval $heldApproval = null;
 
+    private bool $restoringWithApproval = false;
+
     public static function bootRequiresApproval(): void
     {
         $hold = fn (Model $model, Operation $operation): ?bool => app(Approvals::class)->intercept($model, $operation) ? null : false;
@@ -30,7 +32,20 @@ trait RequiresApproval
             : $hold($model, Operation::Delete));
 
         if (in_array(SoftDeletes::class, class_uses_recursive(static::class), true)) {
-            static::registerModelEvent('restoring', fn (Model $model): ?bool => $hold($model, Operation::Restore));
+            static::registerModelEvent('restoring', function (Model $model) use ($hold): ?bool {
+                $held = $hold($model, Operation::Restore);
+
+                if ($held === null && method_exists($model, 'markRestoringWithApproval')) {
+                    $model->markRestoringWithApproval(true);
+                }
+
+                return $held;
+            });
+            static::registerModelEvent('restored', function (Model $model): void {
+                if (method_exists($model, 'markRestoringWithApproval')) {
+                    $model->markRestoringWithApproval(false);
+                }
+            });
             static::registerModelEvent('forceDeleting', fn (Model $model): ?bool => $hold($model, Operation::ForceDelete));
         }
 
@@ -91,6 +106,16 @@ trait RequiresApproval
         $this->approvalNotes = null;
 
         return $notes;
+    }
+
+    public function isRestoringWithApproval(): bool
+    {
+        return $this->restoringWithApproval;
+    }
+
+    public function markRestoringWithApproval(bool $restoring): void
+    {
+        $this->restoringWithApproval = $restoring;
     }
 
     public function isBypassingApproval(): bool

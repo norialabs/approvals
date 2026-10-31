@@ -165,6 +165,14 @@ final class Settings
         return self::stringKeys($policies[$subjectClass]);
     }
 
+    /** @return list<string> */
+    public static function ignoredFields(): array
+    {
+        $fields = config('approvals.ignored', []);
+
+        return is_array($fields) ? array_values(array_filter($fields, is_string(...))) : [];
+    }
+
     public static function reminderMinutes(): int
     {
         $minutes = config('approvals.reminders.after', 1440);
