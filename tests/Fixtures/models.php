@@ -60,7 +60,12 @@ final class User extends Authenticatable
 
     protected $guarded = [];
 
-    protected $table = 'users';
+    public function getTable(): string
+    {
+        $table = config('approvals.actors.table');
+
+        return is_string($table) ? $table : 'users';
+    }
 
     public static function keyConfig(): string
     {
@@ -130,14 +135,24 @@ final class Invoice extends Model
  * @property string $id
  * @property string $title
  */
-final class Document extends Model
+class Document extends Model
 {
     use HasUlids;
     use RequiresApproval;
 
     protected $guarded = [];
 
+    protected $table = 'documents';
+
     protected bool $hidesUnapprovedCreations = true;
+}
+
+final class Drawing extends Document
+{
+    public function discardUnapprovedCreation(Approval $approval): void
+    {
+        $this->forceFill(['title' => 'Rejected: '.$this->title])->saveWithoutApproval();
+    }
 }
 
 /**

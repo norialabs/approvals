@@ -598,6 +598,7 @@ final class Approvals
         }
 
         $delegations = Settings::delegationModel()::query()
+            ->forTenant($approval->tenantKey())
             ->active()
             ->covering($approval->subject_type)
             ->where('delegate_id', $actorId)

@@ -115,16 +115,6 @@ class Approval extends Model
         $query->where('maker_id', $actorId);
     }
 
-    /** @param Builder<self> $query */
-    public function scopeForTenant(Builder $query, int|string|null $tenant): void
-    {
-        if (! Settings::tenancyEnabled()) {
-            return;
-        }
-
-        $query->withoutGlobalScope('approvals.tenant')->where($query->qualifyColumn(Settings::tenantColumn()), $tenant);
-    }
-
     public function isOpen(): bool
     {
         return $this->status->isOpen();

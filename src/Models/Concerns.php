@@ -66,6 +66,16 @@ trait Concerns
         return Settings::keyType() === 'uuid' ? (string) Str::orderedUuid() : strtolower((string) Str::ulid());
     }
 
+    /** @param Builder<static> $query */
+    public function scopeForTenant(Builder $query, int|string|null $tenant): void
+    {
+        if (! Settings::tenancyEnabled()) {
+            return;
+        }
+
+        $query->withoutGlobalScope('approvals.tenant')->where($query->qualifyColumn(Settings::tenantColumn()), $tenant);
+    }
+
     public function tenantKey(): int|string|null
     {
         if (! Settings::tenancyEnabled()) {

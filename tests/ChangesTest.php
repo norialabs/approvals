@@ -12,6 +12,7 @@ use Noria\Approvals\Snapshot;
 use Noria\Approvals\Status;
 use Noria\Approvals\Tests\Fixtures\Contract;
 use Noria\Approvals\Tests\Fixtures\Document;
+use Noria\Approvals\Tests\Fixtures\Drawing;
 use Noria\Approvals\Tests\Fixtures\Invoice;
 use Noria\Approvals\Tests\Fixtures\Payout;
 use Noria\Approvals\Tests\Fixtures\Tag;
@@ -209,6 +210,17 @@ describe('choosing what needs approval', function (): void {
             ->and($second->save())->toBeFalse();
     });
 
+    it('offers a bypass for every write on the record itself', function (): void {
+        $invoice = invoice();
+
+        expect($invoice->updateWithoutApproval(['amount' => '10.00']))->toBeTrue()
+            ->and($invoice->deleteWithoutApproval())->toBeTrue()
+            ->and($invoice->restoreWithoutApproval())->toBeTrue()
+            ->and($invoice->forceDeleteWithoutApproval())->toBeTrue()
+            ->and(Invoice::withTrashed()->count())->toBe(0)
+            ->and($invoice->approvals()->count())->toBe(0);
+    });
+
     it('skips review entirely when approvals are switched off', function (): void {
         config(['approvals.enforced' => false]);
 
@@ -301,6 +313,24 @@ describe('records saved before they are approved', function (): void {
         expect(Document::query()->withUnapproved()->count())->toBe(0);
     });
 
+    it('lets a model decide how to discard a declined record', function (): void {
+        $drawing = new Drawing(['title' => 'Draft']);
+        $drawing->saveWithoutApproval();
+
+        approvals()->decline($drawing->submitForApproval(), $this->checker->id);
+
+        expect(Document::query()->withUnapproved()->sole()->title)->toBe('Rejected: Draft');
+    });
+
+    it('refuses a submission without anyone signed in when the host requires one', function (): void {
+        config(['approvals.without_actor' => 'reject']);
+        $document = new Document(['title' => 'Draft']);
+        $document->saveWithoutApproval();
+        auth()->logout();
+
+        expect(fn () => $document->submitForApproval())->toThrow(ApprovalException::class, 'signed-in user');
+    });
+
     it('refuses to submit a record that was never saved', function (): void {
         expect(fn () => (new Document(['title' => 'Unsaved']))->submitForApproval())->toThrow(InvalidArgumentException::class);
     });
@@ -341,6 +371,19 @@ describe('relationship writes', function (): void {
         'update existing pivot' => ['updateExistingPivot', [fn ($tags) => $tags[0]->id, ['note' => 'y']], ['a']],
     ]);
 
+    it('writes straight through when the policy needs no approval', function (): void {
+        config(['approvals.subject_policies' => [Invoice::class => ['operations' => ['delete']]]]);
+        $invoice = invoice();
+        $tag = Tag::query()->create(['name' => 'urgent']);
+
+        expect($invoice->approvalRelation('tags')->attach($tag))->toBeNull()
+            ->and($invoice->tags()->count())->toBe(1);
+    });
+
+    it('refuses a relationship write on a record that was never saved', function (): void {
+        expect(fn () => (new Invoice)->approvalRelation('tags')->attach(1))->toThrow(InvalidArgumentException::class, 'Save the record');
+    });
+
     it('writes straight through when review is bypassed', function (): void {
         $invoice = invoice();
         $tag = Tag::query()->create(['name' => 'urgent']);
@@ -369,6 +412,12 @@ describe('actions', function (): void {
         approvals()->approve($approval, $this->checker->id);
 
         expect(Payout::$paid)->toBe([['account' => '0712345678', 'amount' => 2500, 'approval' => $approval?->id]]);
+    });
+
+    it('runs an action at once while review is bypassed', function (): void {
+        approvals()->withoutApproval(fn () => approvals()->action(new Payout('0700000001', 5)));
+
+        expect(Payout::$paid)->toHaveCount(1);
     });
 
     it('runs an action at once when no approval is needed', function (): void {
