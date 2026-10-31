@@ -7,6 +7,7 @@ use Noria\Approvals\Events\ApprovalAdvanced;
 use Noria\Approvals\Events\ApprovalClosed;
 use Noria\Approvals\Events\ApprovalFailed;
 use Noria\Approvals\Exceptions\ApprovalException;
+use Noria\Approvals\Group;
 use Noria\Approvals\Models\Approval;
 use Noria\Approvals\Models\ApprovalEvent;
 use Noria\Approvals\Operation;
@@ -161,6 +162,106 @@ describe('several approvers and steps', function (): void {
         approvals()->approve($approval->fresh(), $this->checker->id);
 
         expect($approval->fresh()?->status)->toBe(Status::Approved);
+    });
+});
+
+describe('groups within a step', function (): void {
+    beforeEach(function (): void {
+        $this->manager = person('Mary', 'manager');
+        $this->third = person('Tom', 'finance');
+    });
+
+    it('needs every group filled, in any order', function (): void {
+        chain(new Step('sign-off', groups: [new Group('finance', 2, roles: ['finance']), new Group('management', roles: ['manager'])]));
+        $approval = heldInvoice('8000.00')->heldApproval();
+
+        approvals()->approve($approval, $this->manager->id);
+        approvals()->approve($approval->fresh(), $this->checker->id);
+        expect($approval->fresh()?->status)->toBe(Status::Pending)
+            ->and(approvals()->progress($approval->fresh()))->toBe([
+                ['group' => 'finance', 'approvals' => 2, 'given' => 1],
+                ['group' => 'management', 'approvals' => 1, 'given' => 1],
+            ]);
+
+        approvals()->approve($approval->fresh(), $this->other->id);
+        expect($approval->fresh()?->status)->toBe(Status::Approved);
+    });
+
+    it('turns away an approval a full group no longer needs, but still lets that person decline', function (): void {
+        chain(new Step('sign-off', groups: [new Group('finance', roles: ['finance']), new Group('management', roles: ['manager'])]));
+        $approval = heldInvoice()->heldApproval();
+        approvals()->approve($approval, $this->checker->id);
+
+        expect(fn () => approvals()->approve($approval->fresh(), $this->other->id))->toThrow(ApprovalException::class, 'finance approvals for the sign-off step are already complete')
+            ->and(approvals()->canReview($approval->fresh(), $this->other->id))->toBeFalse()
+            ->and(approvals()->canReview($approval->fresh(), $this->manager->id))->toBeTrue()
+            ->and(approvals()->decline($approval->fresh(), $this->other->id)->status)->toBe(Status::Declined);
+    });
+
+    it('counts someone who belongs to two groups wherever the step still needs them', function (): void {
+        chain(new Step('sign-off', groups: [new Group('finance', roles: ['finance']), new Group('owner', users: [$this->checker->id])]));
+        $approval = heldInvoice()->heldApproval();
+
+        approvals()->approve($approval, $this->checker->id);
+        approvals()->approve($approval->fresh(), $this->other->id);
+
+        expect($approval->fresh()?->status)->toBe(Status::Approved);
+    });
+
+    it('closes on whichever group fills first when any one will do', function (string $route): void {
+        $cfo = person('Cleo', 'cfo');
+        $director = person('Dan', 'director');
+        $secondDirector = person('Dora', 'director');
+        chain(new Step('release', mode: Step::ANY, groups: [new Group('cfo', roles: ['cfo']), new Group('directors', 2, roles: ['director'])]));
+        $approval = heldInvoice()->heldApproval();
+
+        if ($route === 'cfo') {
+            approvals()->approve($approval, $cfo->id);
+        } else {
+            approvals()->approve($approval, $director->id);
+            expect($approval->fresh()?->status)->toBe(Status::Pending);
+            approvals()->approve($approval->fresh(), $secondDirector->id);
+        }
+
+        expect($approval->fresh()?->status)->toBe(Status::Approved);
+    })->with(['cfo', 'directors']);
+
+    it('lists the reviewers of the groups still waiting', function (): void {
+        chain(new Step('sign-off', groups: [new Group('finance', users: [$this->checker->id]), new Group('management', users: [$this->manager->id, $this->maker->id])]));
+        $approval = heldInvoice()->heldApproval();
+
+        expect(approvals()->reviewersFor($approval))->toBe([$this->checker->id, $this->manager->id]);
+
+        approvals()->approve($approval, $this->checker->id);
+
+        expect(approvals()->reviewersFor($approval->fresh()))->toBe([$this->manager->id]);
+    });
+
+    it('fills a group through a delegate', function (): void {
+        $cover = person('Faith');
+        approvals()->delegate($this->manager->id, $cover->id);
+        chain(new Step('sign-off', groups: [new Group('finance', roles: ['finance']), new Group('management', roles: ['manager'])]));
+        $approval = heldInvoice()->heldApproval();
+
+        approvals()->approve($approval, $this->checker->id);
+        approvals()->approve($approval->fresh(), $cover->id);
+
+        expect($approval->fresh()?->status)->toBe(Status::Approved)
+            ->and($approval->events()->where('action', 'approved')->get()->pluck('payload.groups')->all())->toBe([['finance'], ['management']]);
+    });
+
+    it('starts the groups of an escalation step afresh', function (): void {
+        chain(new Step('sign-off', escalateAfter: 5, escalateTo: new Step('board', groups: [new Group('chair', users: [$this->manager->id]), new Group('finance', roles: ['finance'])]), groups: [new Group('finance', 2, roles: ['finance'])]));
+        $approval = heldInvoice()->heldApproval();
+        approvals()->approve($approval, $this->checker->id);
+
+        $this->travel(6)->minutes();
+        approvals()->escalate();
+
+        expect(approvals()->progress($approval->fresh()))->toBe([
+            ['group' => 'chair', 'approvals' => 1, 'given' => 0],
+            ['group' => 'finance', 'approvals' => 1, 'given' => 0],
+        ]);
     });
 });
 

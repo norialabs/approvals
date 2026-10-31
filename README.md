@@ -5,8 +5,9 @@ any action you define is held until the right people approve it. The person who 
 never approve it.
 
 - Holds creates, updates, deletes, restores and permanent deletes automatically through model events.
-- Supports one approver, several approvers per step, chains of steps, and rules that pick the steps
-  from the change itself, for example a second approver above a set amount.
+- Supports one approver, several approvers per step, groups within a step ("2 finance and 1
+  manager", or "the CFO alone or 2 directors"), chains of steps, and rules that pick the steps from
+  the change itself, for example a second approver above a set amount.
 - Has delegation, expiry, reminders and escalation, with an append-only audit trail.
 - Lets you choose every key type (int, ULID, UUID) and every table name, including your actors and
   tenant tables, and replace every decision with your own class.
@@ -163,6 +164,7 @@ $approvals->declineMany($ids);
 
 $approvals->canReview($approval, $userId);
 $approvals->reviewersFor($approval);     // ids still able to act, or null when unknown
+$approvals->progress($approval);         // [['group' => 'finance', 'approvals' => 2, 'given' => 1], ...]
 ```
 
 The reviewer is the signed-in user unless you pass an id. Approving runs in a transaction and locks
@@ -218,6 +220,31 @@ A step takes:
   `roles` (checked with the actor's `hasAnyRole` or `hasRole`). Every constraint you set must pass.
   A step with none is open to anyone but the maker.
 - `escalate_after` and `escalate_to`: hand the step to another step when it is overdue.
+
+### Groups
+
+To need approvals from different kinds of people in the same step, split the step into `groups`.
+Each group has its own `name`, `approvals`, `users`, `ability` and `roles`. A step sets its approvers
+either on the step or in groups, never both.
+
+```php
+['name' => 'sign-off', 'groups' => [
+    ['name' => 'finance', 'approvals' => 2, 'roles' => ['finance']],
+    ['name' => 'management', 'roles' => ['manager']],
+]]
+
+['name' => 'release', 'mode' => 'any', 'groups' => [
+    ['name' => 'cfo', 'roles' => ['cfo']],
+    ['name' => 'directors', 'approvals' => 2, 'roles' => ['director']],
+]]
+```
+
+With `mode` set to `all` (the default), the step closes once every group has its approvals, in any
+order. With `any`, it closes as soon as one group does. Someone who belongs to two groups is counted
+wherever the step still needs them. Once a person's groups are full, their approval is refused, but
+they can still decline or request changes.
+
+In code: `new Step('sign-off', groups: [new Group('finance', 2, roles: ['finance']), new Group('management', roles: ['manager'])])`.
 
 The first rule whose conditions all match is merged over the base definition. A condition is
 `[field, operator, value]`. The operators are `=`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in`,
@@ -306,8 +333,8 @@ Every action also lands in `approval_events`, which refuses updates and deletes:
 Bind your own implementation of any contract, or name it in config:
 
 - `Contracts\Policy`: which steps a change needs.
-- `Contracts\Reviewers`: who may approve a step, and who could (`candidates`, used for reminders
-  and deadlock detection).
+- `Contracts\Reviewers`: who may approve for a group, and who could (`candidates`, used for
+  reminders and deadlock detection). A step without groups is one group named after the step.
 - `Contracts\Tenancy`: the tenant of a record, the current tenant, and `within($tenant, $callback)`.
   Every decision and sweep runs inside `within`, so you can set the database session there (for
   row-level security, for example).

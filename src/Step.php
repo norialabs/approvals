@@ -8,52 +8,99 @@ use InvalidArgumentException;
 
 final readonly class Step
 {
+    public const ALL = 'all';
+
+    public const ANY = 'any';
+
+    /** @var list<Group> */
+    public array $groups;
+
     /**
      * @param  list<int|string>  $users
      * @param  list<string>  $roles
+     * @param  list<Group>  $groups
      */
     public function __construct(
         public string $name,
-        public int $approvals = 1,
-        public array $users = [],
-        public ?string $ability = null,
-        public array $roles = [],
+        int $approvals = 1,
+        array $users = [],
+        ?string $ability = null,
+        array $roles = [],
         public ?int $escalateAfter = null,
         public ?Step $escalateTo = null,
+        array $groups = [],
+        public string $mode = self::ALL,
     ) {
         if ($name === '') {
             throw new InvalidArgumentException('An approval step needs a name.');
         }
 
-        if ($approvals < 1) {
-            throw new InvalidArgumentException("Approval step [{$name}] needs at least one approval.");
-        }
-
         if ($escalateAfter !== null && $escalateAfter < 1) {
             throw new InvalidArgumentException("Approval step [{$name}] must escalate after at least one minute.");
         }
+
+        if (! in_array($mode, [self::ALL, self::ANY], true)) {
+            throw new InvalidArgumentException("Approval step [{$name}] mode must be all or any.");
+        }
+
+        if ($groups !== [] && ($users !== [] || $ability !== null || $roles !== [] || $approvals !== 1)) {
+            throw new InvalidArgumentException("Approval step [{$name}] sets its approvers either on the step or in groups, not both.");
+        }
+
+        $names = array_map(fn (Group $group): string => $group->name, $groups);
+
+        if (count($names) !== count(array_unique($names))) {
+            throw new InvalidArgumentException("Approval step [{$name}] has two groups with the same name.");
+        }
+
+        $this->groups = $groups === [] ? [new Group($name, $approvals, $users, $ability, $roles)] : $groups;
+    }
+
+    public function hasGroups(): bool
+    {
+        return count($this->groups) > 1 || $this->groups[0]->name !== $this->name;
+    }
+
+    public function group(string $name): ?Group
+    {
+        foreach ($this->groups as $group) {
+            if ($group->name === $name) {
+                return $group;
+            }
+        }
+
+        return null;
+    }
+
+    public function approvalsNeeded(): int
+    {
+        $counts = array_map(fn (Group $group): int => $group->approvals, $this->groups);
+
+        return $this->mode === self::ANY ? min($counts) : array_sum($counts);
     }
 
     public function isOpenToAnyone(): bool
     {
-        return $this->users === [] && $this->ability === null && $this->roles === [];
+        foreach ($this->groups as $group) {
+            if (! $group->isOpenToAnyone()) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** @param array<mixed> $definition */
     public static function fromArray(array $definition): self
     {
         $name = $definition['name'] ?? 'review';
-        $approvals = $definition['approvals'] ?? 1;
-        $ability = $definition['ability'] ?? null;
         $escalateAfter = $definition['escalate_after'] ?? null;
         $escalateTo = $definition['escalate_to'] ?? null;
+        $groups = $definition['groups'] ?? [];
+        $mode = $definition['mode'] ?? self::ALL;
 
-        if (! is_string($name) || ! is_numeric($approvals)) {
+        if (! is_string($name)) {
             throw new InvalidArgumentException('An approval step needs a string name and a numeric approvals count.');
-        }
-
-        if ($ability !== null && ! is_string($ability)) {
-            throw new InvalidArgumentException("Approval step [{$name}] ability must be a string.");
         }
 
         if ($escalateAfter !== null && ! is_numeric($escalateAfter)) {
@@ -64,68 +111,51 @@ final readonly class Step
             throw new InvalidArgumentException("Approval step [{$name}] escalate_to must be a step definition.");
         }
 
+        if (! is_array($groups) || ! is_string($mode)) {
+            throw new InvalidArgumentException("Approval step [{$name}] groups must be a list of group definitions.");
+        }
+
+        $parsed = [];
+
+        foreach ($groups as $group) {
+            if (! is_array($group) || ! isset($group['name'])) {
+                throw new InvalidArgumentException("Approval step [{$name}] groups must be a list of named group definitions.");
+            }
+
+            $parsed[] = Group::fromArray($group, $name);
+        }
+
+        if ($parsed !== [] && array_intersect_key($definition, array_flip(['approvals', 'users', 'ability', 'roles'])) !== []) {
+            throw new InvalidArgumentException("Approval step [{$name}] sets its approvers either on the step or in groups, not both.");
+        }
+
+        $own = $parsed === [] ? Group::fromArray($definition, $name) : null;
+
         return new self(
             name: $name,
-            approvals: (int) $approvals,
-            users: self::keys($definition['users'] ?? [], $name),
-            ability: $ability,
-            roles: self::strings($definition['roles'] ?? [], $name),
+            approvals: $own === null ? 1 : $own->approvals,
+            users: $own === null ? [] : $own->users,
+            ability: $own?->ability,
+            roles: $own === null ? [] : $own->roles,
             escalateAfter: $escalateAfter === null ? null : (int) $escalateAfter,
             escalateTo: $escalateTo === null ? null : self::fromArray($escalateTo),
+            groups: $parsed,
+            mode: $mode,
         );
     }
 
     /** @return array<string, mixed> */
     public function toArray(): array
     {
+        $approvers = $this->hasGroups()
+            ? ['groups' => array_map(fn (Group $group): array => $group->toArray(), $this->groups), 'mode' => $this->mode === self::ANY ? self::ANY : null]
+            : array_diff_key($this->groups[0]->toArray(), ['name' => true]);
+
         return array_filter([
             'name' => $this->name,
-            'approvals' => $this->approvals,
-            'users' => $this->users,
-            'ability' => $this->ability,
-            'roles' => $this->roles,
+            ...$approvers,
             'escalate_after' => $this->escalateAfter,
             'escalate_to' => $this->escalateTo?->toArray(),
         ], fn (mixed $value): bool => $value !== null && $value !== []);
-    }
-
-    /** @return list<int|string> */
-    private static function keys(mixed $values, string $name): array
-    {
-        if (! is_array($values)) {
-            throw new InvalidArgumentException("Approval step [{$name}] users must be a list of keys.");
-        }
-
-        $keys = [];
-
-        foreach ($values as $value) {
-            if (! is_int($value) && ! is_string($value)) {
-                throw new InvalidArgumentException("Approval step [{$name}] users must be a list of keys.");
-            }
-
-            $keys[] = $value;
-        }
-
-        return $keys;
-    }
-
-    /** @return list<string> */
-    private static function strings(mixed $values, string $name): array
-    {
-        if (! is_array($values)) {
-            throw new InvalidArgumentException("Approval step [{$name}] roles must be a list of names.");
-        }
-
-        $strings = [];
-
-        foreach ($values as $value) {
-            if (! is_string($value)) {
-                throw new InvalidArgumentException("Approval step [{$name}] roles must be a list of names.");
-            }
-
-            $strings[] = $value;
-        }
-
-        return $strings;
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Noria\Approvals\Contracts\Policy;
 use Noria\Approvals\Contracts\Reviewers;
 use Noria\Approvals\Defaults\ConfiguredPolicy;
+use Noria\Approvals\Group;
 use Noria\Approvals\Models\Approval;
 use Noria\Approvals\Models\ApprovalPolicy;
 use Noria\Approvals\Operation;
@@ -46,7 +47,7 @@ describe('where a policy comes from', function (): void {
     it('uses the host default when it sets one', function (): void {
         config(['approvals.default' => ['steps' => [['name' => 'ops', 'approvals' => 2]]]]);
 
-        expect(app(Policy::class)->requirementFor(change([]))->steps[0])->name->toBe('ops')->approvals->toBe(2);
+        expect(app(Policy::class)->requirementFor(change([]))->steps[0])->name->toBe('ops')->approvalsNeeded()->toBe(2);
     });
 
     it('prefers a subject policy over the default', function (): void {
@@ -200,6 +201,22 @@ describe('definitions', function (): void {
         expect(Requirement::fromArray($requirement->toArray()))->toEqual($requirement);
     });
 
+    it('reads groups and the any mode from config', function (): void {
+        $step = Step::fromArray(['name' => 'release', 'mode' => 'any', 'groups' => [
+            ['name' => 'cfo', 'users' => [1]],
+            ['name' => 'directors', 'approvals' => 2, 'roles' => ['director']],
+        ]]);
+
+        expect($step->mode)->toBe(Step::ANY)
+            ->and($step->hasGroups())->toBeTrue()
+            ->and($step->group('directors')?->approvals)->toBe(2)
+            ->and($step->group('missing'))->toBeNull()
+            ->and($step->approvalsNeeded())->toBe(1)
+            ->and($step->isOpenToAnyone())->toBeFalse()
+            ->and(Step::fromArray($step->toArray()))->toEqual($step)
+            ->and(Step::fromArray(['name' => 'plain', 'approvals' => 3])->hasGroups())->toBeFalse();
+    });
+
     it('rejects definitions it cannot read', function (array $definition, string $message): void {
         expect(fn () => Requirement::fromArray($definition))->toThrow(InvalidArgumentException::class, $message);
     })->with([
@@ -217,6 +234,12 @@ describe('definitions', function (): void {
         'escalation delay' => [['steps' => [['escalate_after' => 'later']]], 'number of minutes'],
         'escalation too soon' => [['steps' => [['escalate_after' => 0]]], 'at least one minute'],
         'escalation target' => [['steps' => [['escalate_to' => 'boss']]], 'step definition'],
+        'groups and step approvers together' => [['steps' => [['roles' => ['x'], 'groups' => [['name' => 'a']]]]], 'not both'],
+        'two groups with one name' => [['steps' => [['groups' => [['name' => 'a'], ['name' => 'a']]]]], 'same name'],
+        'unnamed group' => [['steps' => [['groups' => [['approvals' => 2]]]]], 'named group'],
+        'groups not a list' => [['steps' => [['groups' => 'finance']]], 'list of group definitions'],
+        'unknown mode' => [['steps' => [['mode' => 'most', 'groups' => [['name' => 'a']]]]], 'all or any'],
+        'empty group' => [['steps' => [['groups' => [['name' => 'a', 'approvals' => 0]]]]], 'at least one approval'],
     ]);
 
     it('rejects malformed rules', function (): void {
@@ -236,12 +259,12 @@ final class NoApprovalPolicy implements Policy
 
 final class OnlyEvenIds implements Reviewers
 {
-    public function allows(Approval $approval, Step $step, int|string $actorId): bool
+    public function allows(Approval $approval, Group $group, int|string $actorId): bool
     {
         return (int) $actorId % 2 === 0;
     }
 
-    public function candidates(Approval $approval, Step $step): array
+    public function candidates(Approval $approval, Group $group): array
     {
         return [1, 2, 4];
     }
