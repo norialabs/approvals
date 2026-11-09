@@ -160,6 +160,16 @@ Pass `subject: $transaction` to tie the action to the record it's about. The app
 filed against that record, and the record can have only one open request at a time, just as with a
 model write.
 
+Pass `kind:` when different kinds of action can wait on the same record at once, such as a refund
+and a course change for one student. Only requests of the same kind on that record block each
+other; a waiting change to the record itself still blocks every kind, and the reverse. Read it with
+`$approval->kind()`, query with the `ofKind($kind)` scope, and match it in a policy as
+`payload.kind`.
+
+```php
+$approvals->action(new Refund($student, 2500), subject: $student, kind: 'refund');
+```
+
 ### Dependent data
 
 A request often carries data stored elsewhere, such as an order's lines or a user's roles. Attach it
@@ -411,7 +421,7 @@ Every action also lands in `approval_events`, which refuses updates and deletes:
 | `distinct_reviewers` | `true` | One person approves once per request, across steps. |
 | `on_conflict` | `fail` | `overwrite` lets an approved update win over later edits. |
 | `run_migrations` | `true` | Off when you publish and own the migration. |
-| `keys` | `ulid` | Primary keys of the package tables: `int`, `ulid` or `uuid`. |
+| `keys` | `ulid` | Primary keys of the package tables: `int`, `ulid` or `uuid` (version 7). |
 | `tables.*` | `approvals`, `approval_events`, `approval_delegations`, `approval_policies` | Table names. |
 | `models.*` | package models | Your subclasses of the package models. |
 | `subjects.key` | `string` | `subject_id` column type: `int`, `ulid`, `uuid`, or `string` for mixed models. |

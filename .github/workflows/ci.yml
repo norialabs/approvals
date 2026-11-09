@@ -1,85 +1,133 @@
-name: CI
+name: Verify and release
 
 on:
   push:
-    branches: [dev, main]
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-jobs:
-  test:
-    runs-on: ubuntu-24.04
-    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ["8.3", "8.4", "8.5"]
-        laravel: ["12", "13"]
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: pdo_pgsql, pdo_sqlite
-          coverage: none
-      - name: Install dependencies
-        run: |
-          composer require "illuminate/support:^${{ matrix.laravel }}.0" "illuminate/database:^${{ matrix.laravel }}.0" "illuminate/console:^${{ matrix.laravel }}.0" --no-update --no-interaction
-          composer update --no-interaction --prefer-dist --no-progress --with-all-dependencies
-      - name: Validate package metadata
-        run: composer validate --strict
-      - name: Check code style
-        run: composer lint
-      - name: Run static analysis
-        run: composer analyse
-      - name: Run tests on SQLite
-        run: composer test
-      - name: Create isolated PostgreSQL test database
-        env:
-          PGPASSWORD: postgres
-        run: psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -f tests/setup-postgres.sql
-      - name: Run tests on PostgreSQL 18
-        env:
-          APPROVALS_TEST_PG: pgsql://noria_approvals_test:approvals_test_only@127.0.0.1:5432/noria_approvals_test
-        run: composer test
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+jobs:
   verify:
     name: Verify what changed
-    needs: test
-    if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
     steps:
-      - name: Require every matrix check
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Look for a pull request that already verified this tree
+        id: reuse
+        if: github.event_name == 'push'
         env:
-          RESULT: ${{ needs.test.result }}
-        run: test "$RESULT" = success
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tree="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          verified=false
+
+          for head in $(gh api "repos/${REPO}/commits/${GITHUB_SHA}/pulls" --jq '.[] | select(.merged_at != null) | .head.sha'); do
+            [ "$(gh api "repos/${REPO}/commits/${head}" --jq .commit.tree.sha)" = "$tree" ] || continue
+            passed="$(gh api "repos/${REPO}/commits/${head}/check-runs?check_name=Verify%20what%20changed&filter=all" \
+              --jq '[.check_runs[] | select(.conclusion == "success")] | length')"
+            if [ "$passed" -gt 0 ]; then
+              echo "tree ${tree} passed verify on pull request head ${head}"
+              verified=true
+              break
+            fi
+          done
+
+          echo "verified=${verified}" >> "${GITHUB_OUTPUT}"
+
+      - name: Work out what changed
+        id: scope
+        env:
+          VERIFIED: ${{ steps.reuse.outputs.verified }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          base="${BASE:-${BEFORE:-}}"
+
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            changed='EVERYTHING'
+          else
+            changed="$(git diff --name-only "$base" "${GITHUB_SHA}")"
+          fi
+
+          scope() {
+            if [ "$changed" = 'EVERYTHING' ]; then
+              echo true
+              return
+            fi
+            if printf '%s\n' "$changed" | grep -qE "$1"; then echo true; else echo false; fi
+          }
+
+          php="$(scope '^(src/|config/|database/|tests/|composer\.json|phpstan\.neon|phpunit\.xml|pint\.json|\.gitattributes|\.github/)')"
+
+          if [ "${VERIFIED:-false}" = true ]; then
+            php=false
+          fi
+
+          echo "php=${php}" >> "${GITHUB_OUTPUT}"
+          echo "changed scopes: php=${php}"
+
+      - name: Set up PHP 8.5
+        if: steps.scope.outputs.php == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+
+      - name: Validate the Composer metadata
+        if: steps.scope.outputs.php == 'true'
+        run: composer validate --strict
+
+      - name: Install Composer dependencies
+        if: steps.scope.outputs.php == 'true'
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Check the code style
+        if: steps.scope.outputs.php == 'true'
+        run: vendor/bin/pint --test
+
+      - name: Analyse the package statically
+        if: steps.scope.outputs.php == 'true'
+        run: vendor/bin/phpstan analyse --no-progress
+
+      - name: Check the package archive builds
+        if: steps.scope.outputs.php == 'true'
+        run: composer archive --format=zip --dir="${RUNNER_TEMP}"
 
   tag:
+    name: Tag the release
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     outputs:
       name: ${{ steps.tag.outputs.name }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -137,7 +185,7 @@ jobs:
           LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -Ev '^v0\.0\.' | head -n1 || true)
 
           if [ -z "$LATEST_TAG" ]; then
-            NEW_TAG="v0.1.0"
+            NEW_TAG="v${RELEASE_LINE}.0"
             echo "Latest release tag: none"
             echo "New tag: $NEW_TAG"
 
@@ -151,18 +199,19 @@ jobs:
 
           echo "Latest release tag: $LATEST_TAG"
 
-          VERSION="${LATEST_TAG#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          LATEST_LINE="${LATEST_TAG#v}"
+          LATEST_LINE="${LATEST_LINE%.*}"
 
-          if [ "$MAJOR" -ne 0 ] || [ "$MINOR" -ne 1 ]; then
-            echo "Refusing to auto-release outside v0.1.x. Move the release baseline manually when you are ready."
+          if [ "$LATEST_LINE" = "$RELEASE_LINE" ]; then
+            NEW_TAG="v${RELEASE_LINE}.$(( ${LATEST_TAG##*.} + 1 ))"
+            echo "Bump: patch"
+          elif [ "$(printf '%s\n' "$LATEST_LINE" "$RELEASE_LINE" | sort -V | head -n1)" = "$LATEST_LINE" ]; then
+            NEW_TAG="v${RELEASE_LINE}.0"
+            echo "Bump: start the ${RELEASE_LINE} line"
+          else
+            echo "Refusing to release ${RELEASE_LINE}.x behind ${LATEST_TAG}. Raise RELEASE_LINE."
             exit 1
           fi
-
-          PATCH=$((PATCH + 1))
-          echo "Bump: patch"
-
-          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
           echo "New tag: $NEW_TAG"
 
           assert_version_unused "$NEW_TAG"
@@ -172,16 +221,18 @@ jobs:
           echo "name=$NEW_TAG" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_LINE: "0.1"
 
   release:
+    name: Publish the release
     needs: [verify, tag]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.tag.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

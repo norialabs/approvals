@@ -123,6 +123,19 @@ class Approval extends Model
         $query->where('maker_id', $actorId);
     }
 
+    /** @param Builder<self> $query */
+    public function scopeOfKind(Builder $query, string $kind): void
+    {
+        $query->where('payload->kind', $kind);
+    }
+
+    public function kind(): ?string
+    {
+        $kind = $this->payload['kind'] ?? null;
+
+        return is_string($kind) ? $kind : null;
+    }
+
     /** @return array<string, mixed> */
     public function extras(): array
     {

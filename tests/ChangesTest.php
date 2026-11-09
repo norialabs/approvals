@@ -661,6 +661,36 @@ describe('actions', function (): void {
         expect(Payout::$paid)->toHaveCount(1);
     });
 
+    it('lets actions of different kinds wait on the same record, one of each kind', function (): void {
+        $invoice = invoice();
+
+        $refund = approvals()->action(new Payout('0712345678', 100), subject: $invoice, kind: 'refund');
+        $transfer = approvals()->action(new Payout('0712345678', 50), subject: $invoice, kind: 'transfer');
+
+        expect($refund?->kind())->toBe('refund')
+            ->and($transfer?->kind())->toBe('transfer')
+            ->and(Approval::query()->open()->ofKind('transfer')->pluck('id')->all())->toBe([$transfer?->id])
+            ->and(fn () => approvals()->action(new Payout('0712345678', 10), subject: $invoice, kind: 'refund'))->toThrow(ApprovalException::class, 'already has a change waiting')
+            ->and(fn () => approvals()->action(new Payout('0712345678', 10), subject: $invoice))->toThrow(ApprovalException::class, 'already has a change waiting')
+            ->and(fn () => approvals()->action(new Payout('0712345678', 10), kind: ' '))->toThrow(InvalidArgumentException::class);
+
+        approvals()->approve($refund, $this->checker->id);
+
+        expect(approvals()->action(new Payout('0712345678', 10), subject: $invoice, kind: 'refund')?->kind())->toBe('refund');
+    });
+
+    it('holds an action of any kind back while a change to the record is waiting, and the reverse', function (): void {
+        $invoice = invoice();
+        $invoice->update(['amount' => '2500.00']);
+
+        expect(fn () => approvals()->action(new Payout('0712345678', 100), subject: $invoice, kind: 'refund'))->toThrow(ApprovalException::class, 'already has a change waiting');
+
+        $other = invoice(['number' => 'INV-950']);
+        approvals()->action(new Payout('0712345678', 100), subject: $other, kind: 'refund');
+
+        expect(fn () => $other->update(['amount' => '75.00']))->toThrow(ApprovalException::class, 'already has a change waiting');
+    });
+
     it('holds an action and runs it once approved', function (): void {
         $approval = approvals()->action(new Payout('0712345678', 2500), 'Weekly wages');
 

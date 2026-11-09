@@ -67,7 +67,7 @@ trait Concerns
     /** @return string */
     public function newUniqueId()
     {
-        return Settings::keyType() === 'uuid' ? (string) Str::orderedUuid() : strtolower((string) Str::ulid());
+        return Settings::keyType() === 'uuid' ? (string) Str::uuid7() : strtolower((string) Str::ulid());
     }
 
     /** @param Builder<static> $query */
