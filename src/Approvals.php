@@ -340,7 +340,7 @@ final class Approvals
     }
 
     /** @param list<string> $confirmations */
-    public function action(ApprovableAction $action, ?string $notes = null, ?Requirement $requirement = null, ?Model $subject = null, array $confirmations = [], int|string|null $actorId = null): ?Approval
+    public function action(ApprovableAction $action, ?string $notes = null, ?Requirement $requirement = null, ?Model $subject = null, array $confirmations = [], int|string|null $actorId = null, ?string $kind = null): ?Approval
     {
         if ($this->bypassed()) {
             $this->withoutApproval(fn () => $action->handle(null));
@@ -352,6 +352,10 @@ final class Approvals
             throw new InvalidArgumentException('Save the record an action is about before submitting the action.');
         }
 
+        if ($kind !== null && trim($kind) === '') {
+            throw new InvalidArgumentException('Name the kind of action, or leave it out.');
+        }
+
         $change = new PendingChange(
             operation: Operation::Action,
             subjectClass: $subject === null ? $action::class : $subject::class,
@@ -360,7 +364,7 @@ final class Approvals
             subject: $subject,
             currentState: null,
             newState: null,
-            payload: ['class' => $action::class, 'data' => $action->payload()],
+            payload: ['class' => $action::class, 'data' => $action->payload(), ...($kind === null ? [] : ['kind' => $kind])],
             actorId: $actorId ?? $this->actors->id(),
             tenantId: $subject === null ? $this->tenancy->current() : $this->tenancy->of($subject),
             confirmations: $confirmations,
@@ -1123,11 +1127,16 @@ final class Approvals
 
     private function guardAgainstOpenRequest(PendingChange $change): void
     {
+        $kind = $change->operation === Operation::Action ? ($change->payload['kind'] ?? null) : null;
+
         $open = Settings::approvalModel()::query()
             ->withoutGlobalScopes()
             ->where('subject_type', $change->subjectType)
             ->where('subject_id', $change->subjectKey)
             ->where('status', Status::Pending->value)
+            ->when(is_string($kind), fn (Builder $query) => $query->where(fn (Builder $query) => $query
+                ->where('operation', '!=', Operation::Action->value)
+                ->orWhere('payload->kind', $kind)))
             ->latest()
             ->first();
 

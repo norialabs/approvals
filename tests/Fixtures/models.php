@@ -45,7 +45,7 @@ trait KeyedByConfig
 
     public function newUniqueId(): string
     {
-        return config(static::keyConfig()) === 'uuid' ? (string) Str::orderedUuid() : strtolower((string) Str::ulid());
+        return config(static::keyConfig()) === 'uuid' ? (string) Str::uuid7() : strtolower((string) Str::ulid());
     }
 }
 
